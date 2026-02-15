@@ -1,5 +1,6 @@
-import json
 import os
+import json
+import copy
 import tkinter as tk
 from tkinter import ttk, messagebox
 import networkx as nx
@@ -104,6 +105,7 @@ class LabInventoryApp(tk.Tk):
         ttk.Button(control_frame, text="Add Component", command=self.add_component).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Edit Selected", command=self.edit_selected).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Delete Selected", command=self.delete_selected).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Clone Selected", command=self.clone_selected).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Visualize Graph", command=self.visualize_graph).pack(fill=tk.X, pady=5)
 
         self.tree = ttk.Treeview(left_frame, show="tree")
@@ -437,6 +439,108 @@ class LabInventoryApp(tk.Tk):
         self.center_window(win)
         win.grab_set()
 
+    def open_item_editor_clone(self, category, type_name, cloned_item):
+
+        win = tk.Toplevel(self)
+        win.title("Clone Item")
+        win.resizable(False, False)
+
+        row = 0
+
+        # Category
+        ttk.Label(win, text="Category *").grid(row=row, column=0, sticky="w", padx=5, pady=5)
+        cat_cb = ttk.Combobox(
+            win,
+            values=["instrument", "tool", "container", "material"],
+            state="readonly",
+            width=35
+        )
+        cat_cb.grid(row=row, column=1, padx=5, pady=5)
+        cat_cb.set(category)
+        row += 1
+
+        # Type Name
+        ttk.Label(win, text="Type name *").grid(row=row, column=0, sticky="w", padx=5)
+        type_entry = ttk.Entry(win, width=40)
+        type_entry.grid(row=row, column=1, padx=5, pady=5)
+        type_entry.insert(0, type_name)
+        row += 1
+
+        # Object Actions (if applicable)
+        action_listbox = None
+        if category != "material":
+            ttk.Label(win, text="Object Actions").grid(row=row, column=0, padx=5)
+            action_listbox = tk.Listbox(win, selectmode=tk.MULTIPLE, height=6)
+            action_listbox.grid(row=row, column=1, padx=5, pady=5)
+
+            for action in OBJECT_ACTIONS:
+                action_listbox.insert(tk.END, action)
+
+            existing = cloned_item.get("object_actions", [])
+            for i, action in enumerate(OBJECT_ACTIONS):
+                if action in existing:
+                    action_listbox.select_set(i)
+
+            row += 1
+
+        # Material field (containers only)
+        material_entry = None
+        if category == "container":
+            ttk.Label(win, text="Material (optional)").grid(row=row, column=0, sticky="w", padx=5)
+            material_entry = ttk.Entry(win, width=40)
+            material_entry.grid(row=row, column=1, padx=5, pady=5)
+
+            contains = cloned_item.get("contains")
+            if contains:
+                material_entry.insert(0, contains.get("type_name", ""))
+
+            row += 1
+
+        # Confirm clone
+        def confirm():
+            new_category = cat_cb.get()
+            new_type = type_entry.get().strip()
+
+            if not new_category or not new_type:
+                messagebox.showerror("Error", "Category and type name required.")
+                return
+
+            inventory[new_category].setdefault(new_type, [])
+            new_id = len(inventory[new_category][new_type])
+
+            # Use deep copy again to avoid mutation
+            new_item = copy.deepcopy(cloned_item)
+            new_item["id"] = new_id
+
+            if new_category != "material":
+                selected_indices = action_listbox.curselection()
+                new_item["object_actions"] = [
+                    OBJECT_ACTIONS[i] for i in selected_indices
+                ]
+
+            if new_category == "container":
+                material_name = material_entry.get().strip()
+                if material_name:
+                    new_item["contains"] = {
+                        "entity_type": "material",
+                        "type_name": material_name
+                    }
+                else:
+                    new_item.pop("contains", None)
+
+            inventory[new_category][new_type].append(new_item)
+
+            win.destroy()
+            self.after_change(
+                focus_values=("item", new_category, new_type, str(new_id))
+            )
+
+        ttk.Button(win, text="Clone", command=confirm)\
+            .grid(row=row, column=1, pady=15, sticky="e")
+
+        self.center_window(win)
+        win.grab_set()
+
     # -----------------------------
     # TREE OPERATIONS
     # -----------------------------
@@ -662,6 +766,31 @@ class LabInventoryApp(tk.Tk):
     def on_close(self):
         save_inventory(inventory)
         self.destroy()
+
+    def clone_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showerror("Error", "Select an item to clone.")
+            return
+
+        values = self.tree.item(sel[0], "values")
+
+        if not values or values[0] != "item":
+            messagebox.showerror("Error", "Only items can be cloned.")
+            return
+
+        cat, type_name, idx = values[1], values[2], int(values[3])
+
+        original_item = inventory[cat][type_name][idx]
+
+        # Deep copy entire structure
+        cloned_item = copy.deepcopy(original_item)
+
+        # Remove id (will be re-assigned)
+        cloned_item.pop("id", None)
+
+        # Open editor in clone mode
+        self.open_item_editor_clone(cat, type_name, cloned_item)
 
     # -----------------------------
     # Graph View
