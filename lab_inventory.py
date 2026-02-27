@@ -18,6 +18,22 @@ COMPONENT_TYPES = {
     "observable": ["read"]
 }
 
+COMPONENT_STATE_SPECS = {
+    "binary control": {
+        "kind": "enum",
+        "values": [0, 1]
+    },
+    "momentary control": {
+        "kind": "enum",
+        "values": ["released", "pressed"]
+    },
+    "receptor": {
+        "kind": "enum",
+        "values": ["empty", "occupied"]
+    }
+    # others configured by user in UI
+}
+
 OBJECT_ACTIONS = [
     "pick_up",
     "place",
@@ -72,11 +88,11 @@ interactions = world["interactions"]
 for cat in inventory:
     for tname in inventory[cat]:
         for item in inventory[cat][tname]:
-
-            if cat != "material":
-                item.setdefault("components", [])
-                item.setdefault("object_actions", [])
-
+                if cat != "material":
+                    item.setdefault("components", [])
+                    item.setdefault("object_actions", [])
+                    item.setdefault("states", {})  # ensure object-level states always exists
+                
                 # container-specific cleanup
                 if cat == "container":
                     # remove legacy key if present
@@ -88,6 +104,13 @@ for cat in inventory:
                 # component normalization (only for non-material)
                 for comp in item.get("components", []):
                     comp.setdefault("actions", [])
+                    # NEW: states (state specification only)
+                    if "states" not in comp:
+                        ctype = comp.get("type")
+                        if ctype in COMPONENT_STATE_SPECS:
+                            comp["states"] = copy.deepcopy(COMPONENT_STATE_SPECS[ctype])
+                        else:
+                            comp["states"] = None  # will be set via GUI for selector/continuous/observable
 
 def parse_object_label(label):
     # format: category:type[id]
@@ -230,6 +253,23 @@ class LabInventoryApp(tk.Tk):
         row += 1
 
         # -----------------------------
+        # Object Attributes (NEW)
+        # -----------------------------
+        attr_frame = ttk.LabelFrame(win, text="Object Attributes")
+
+        movable_var = tk.BooleanVar(value=False)
+        container_var = tk.BooleanVar(value=False)
+
+        movable_cb = ttk.Checkbutton(attr_frame, text="Movable", variable=movable_var)
+        container_cb = ttk.Checkbutton(attr_frame, text="Material Container", variable=container_var)
+
+        movable_cb.pack(anchor="w", padx=5, pady=2)
+        container_cb.pack(anchor="w", padx=5, pady=2)
+
+        attr_frame.grid(row=row, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        row += 1
+
+        # -----------------------------
         # Material (Container Only)
         # -----------------------------
         material_label = ttk.Label(win, text="Material (optional)")
@@ -253,13 +293,20 @@ class LabInventoryApp(tk.Tk):
             cat_cb.config(state="disabled")
             type_entry.insert(0, type_name)
 
-            existing_actions = inventory[cat][type_name][idx].get("object_actions", [])
+            item = inventory[cat][type_name][idx]
+
+            existing_actions = item.get("object_actions", [])
             for i, action in enumerate(OBJECT_ACTIONS):
                 if action in existing_actions:
                     action_listbox.select_set(i)
 
+            states = item.get("states", {})
+            movable_var.set("location" in states)
+            container_var.set("quantity" in states)
+
+            # Prefill container material
             if cat == "container":
-                contains = inventory[cat][type_name][idx].get("contains")
+                contains = item.get("contains")
                 if contains:
                     material_entry.insert(0, contains.get("type_name", ""))
 
@@ -307,7 +354,28 @@ class LabInventoryApp(tk.Tk):
 
                 if category != "material":
                     item["object_actions"] = selected_object_actions
+                    # Ensure states exists
+                    item.setdefault("states", {})
 
+                    # Movable → location state
+                    if movable_var.get():
+                        item["states"]["location"] = {
+                            "kind": "enum",
+                            "domain": "locations"
+                        }
+                    else:
+                        item["states"].pop("location", None)
+
+                    # Contains material → quantity state
+                    if container_var.get():
+                        item["states"]["quantity"] = {
+                            "kind": "numeric",
+                            "min": 0,
+                            "max": 100
+                        }
+                    else:
+                        item["states"].pop("quantity", None)
+                
                 if category == "container":
                     if material_name:
                         item["contains"] = {
@@ -316,7 +384,7 @@ class LabInventoryApp(tk.Tk):
                         }
                     else:
                         item.pop("contains", None)
-                    
+
             # -------------------------
             # ADD MODE
             # -------------------------
@@ -332,9 +400,22 @@ class LabInventoryApp(tk.Tk):
                     new_item = {
                         "id": new_item_id,
                         "components": [],
-                        "object_actions": selected_object_actions
+                        "object_actions": selected_object_actions,
+                        "states": {}
                     }
 
+                    if movable_var.get():
+                        new_item["states"]["location"] = {
+                            "kind": "enum",
+                            "domain": "locations"
+                        }
+
+                    if container_var.get():
+                        new_item["states"]["quantity"] = {
+                            "kind": "numeric",
+                            "min": 0,
+                            "max": 100
+                        }
                 if category == "container" and material_name:
                     new_item["contains"] = {
                         "entity_type": "material",
@@ -349,7 +430,7 @@ class LabInventoryApp(tk.Tk):
             self.after_change(focus_values=focus)
 
         # -----------------------------
-        # Save Button (Always Visible)
+        # Save Button
         # -----------------------------
         ttk.Button(
             win,
@@ -404,28 +485,143 @@ class LabInventoryApp(tk.Tk):
         components = inventory[cat][type_name][idx]["components"]
 
         # -----------------------------
-        # Update actions when type changes
+        # States editor (dynamic)
         # -----------------------------
-        def update_actions(event=None):
+        states_frame = ttk.LabelFrame(win, text="States (state specification)")
+        states_frame.grid(row=row, column=0, columnspan=2, padx=5, pady=8, sticky="ew")
+        row += 1
+
+        states_widgets = {}
+
+        def clear_states_frame():
+            for child in states_frame.winfo_children():
+                child.destroy()
+            states_widgets.clear()
+
+        def build_states_ui(ctype, existing_states=None):
+            clear_states_frame()
+
+            # Predefined enum state specs
+            if ctype in COMPONENT_STATE_SPECS:
+                spec = COMPONENT_STATE_SPECS[ctype]
+                ttk.Label(
+                    states_frame,
+                    text=f"Predefined enum states: {spec['values']}"
+                ).pack(anchor="w", padx=6, pady=6)
+                return
+
+            # Selector control -> enum
+            if ctype == "selector control":
+                ttk.Label(states_frame, text="Allowed values (comma-separated) *") \
+                    .grid(row=0, column=0, sticky="w", padx=5, pady=3)
+                e = ttk.Entry(states_frame, width=40)
+                e.grid(row=0, column=1, padx=5, pady=3, sticky="w")
+
+                if isinstance(existing_states, dict) and existing_states.get("kind") == "enum":
+                    e.insert(0, ",".join(map(str, existing_states.get("values", []))))
+
+                states_widgets["selector_values"] = e
+                return
+
+            # Continuous control -> numeric
+            if ctype == "continuous control":
+                ttk.Label(states_frame, text="Min *") \
+                    .grid(row=0, column=0, sticky="w", padx=5, pady=3)
+                min_e = ttk.Entry(states_frame, width=14)
+                min_e.grid(row=0, column=1, padx=5, pady=3, sticky="w")
+
+                ttk.Label(states_frame, text="Max *") \
+                    .grid(row=1, column=0, sticky="w", padx=5, pady=3)
+                max_e = ttk.Entry(states_frame, width=14)
+                max_e.grid(row=1, column=1, padx=5, pady=3, sticky="w")
+
+                ttk.Label(states_frame, text="Step (optional)") \
+                    .grid(row=2, column=0, sticky="w", padx=5, pady=3)
+                step_e = ttk.Entry(states_frame, width=14)
+                step_e.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+
+                if isinstance(existing_states, dict) and existing_states.get("kind") == "numeric":
+                    min_e.insert(0, str(existing_states.get("min", "")))
+                    max_e.insert(0, str(existing_states.get("max", "")))
+                    if "step" in existing_states:
+                        step_e.insert(0, str(existing_states["step"]))
+
+                states_widgets["cont_min"] = min_e
+                states_widgets["cont_max"] = max_e
+                states_widgets["cont_step"] = step_e
+                return
+
+            # Observable -> numeric + unit
+            if ctype == "observable":
+                ttk.Label(states_frame, text="Min *") \
+                    .grid(row=1, column=0, sticky="w", padx=5, pady=3)
+                min_e = ttk.Entry(states_frame, width=14)
+                min_e.grid(row=1, column=1, padx=5, pady=3, sticky="w")
+
+                ttk.Label(states_frame, text="Max *") \
+                    .grid(row=2, column=0, sticky="w", padx=5, pady=3)
+                max_e = ttk.Entry(states_frame, width=14)
+                max_e.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+
+                ttk.Label(states_frame, text="Step (optional)") \
+                    .grid(row=3, column=0, sticky="w", padx=5, pady=3)
+                step_e = ttk.Entry(states_frame, width=14)
+                step_e.grid(row=3, column=1, padx=5, pady=3, sticky="w")
+
+                ttk.Label(states_frame, text="Unit *") \
+                    .grid(row=4, column=0, sticky="w", padx=5, pady=3)
+                unit_e = ttk.Entry(states_frame, width=10)
+                unit_e.grid(row=4, column=1, padx=5, pady=3, sticky="w")
+
+                if isinstance(existing_states, dict) and existing_states.get("kind") == "numeric":
+                    min_e.insert(0, str(existing_states.get("min", "")))
+                    max_e.insert(0, str(existing_states.get("max", "")))
+                    if "step" in existing_states:
+                        step_e.insert(0, str(existing_states["step"]))
+                    unit_e.insert(0, str(existing_states.get("unit", "")))
+
+                states_widgets["obs_min"] = min_e
+                states_widgets["obs_max"] = max_e
+                states_widgets["obs_step"] = step_e
+                states_widgets["obs_unit"] = unit_e
+                return
+
+            ttk.Label(states_frame, text="No state editor for this component type.").pack(anchor="w", padx=6, pady=6)
+
+        def update_actions_and_states(existing_states=None):
+            # rebuild actions listbox for this type
             action_listbox.delete(0, tk.END)
             ctype = type_cb.get()
             for action in COMPONENT_TYPES.get(ctype, []):
                 action_listbox.insert(tk.END, action)
 
-        type_cb.bind("<<ComboboxSelected>>", update_actions)
+            # rebuild states UI, optionally with existing states
+            build_states_ui(ctype, existing_states)
+
+        # bind user changes (no existing_states on user change)
+        def on_type_change(event=None):
+            update_actions_and_states(existing_states=None)
+
+        type_cb.bind("<<ComboboxSelected>>", on_type_change)
 
         # -----------------------------
         # Edit Mode Prefill
         # -----------------------------
         if is_edit:
             comp = components[comp_idx]
-            name_entry.insert(0, comp["name"])
-            type_cb.set(comp["type"])
-            update_actions()
 
-            existing = comp.get("actions", [])
-            for i, action in enumerate(COMPONENT_TYPES.get(comp["type"], [])):
-                if action in existing:
+            # name + type
+            name_entry.insert(0, comp.get("name", ""))
+            type_cb.set(comp.get("type", ""))
+
+            # build actions+states UI ONCE with existing states
+            update_actions_and_states(existing_states=comp.get("states"))
+
+            # preselect actions
+            existing_actions = set(comp.get("actions", []))
+            allowed_actions = COMPONENT_TYPES.get(comp.get("type", ""), [])
+            for i, action in enumerate(allowed_actions):
+                if action in existing_actions:
                     action_listbox.select_set(i)
 
         # -----------------------------
@@ -452,6 +648,73 @@ class LabInventoryApp(tk.Tk):
                 "actions": selected_actions
             }
 
+            # -----------------------------
+            # Build typed 'states'
+            # -----------------------------
+            if ctype in COMPONENT_STATE_SPECS:
+                comp_data["states"] = copy.deepcopy(COMPONENT_STATE_SPECS[ctype])
+
+            elif ctype == "selector control":
+                raw = states_widgets["selector_values"].get().strip()
+                values = [v.strip() for v in raw.split(",") if v.strip()]
+                if not values:
+                    messagebox.showerror("Error", "Selector requires allowed values.")
+                    return
+                comp_data["states"] = {"kind": "enum", "values": values}
+
+            elif ctype == "continuous control":
+                try:
+                    mn = float(states_widgets["cont_min"].get().strip())
+                    mx = float(states_widgets["cont_max"].get().strip())
+                except:
+                    messagebox.showerror("Error", "Continuous control requires numeric Min and Max.")
+                    return
+                if mx < mn:
+                    messagebox.showerror("Error", "Max must be >= Min.")
+                    return
+
+                spec = {"kind": "numeric", "min": mn, "max": mx}
+                step_txt = states_widgets["cont_step"].get().strip()
+                if step_txt:
+                    try:
+                        spec["step"] = float(step_txt)
+                    except:
+                        messagebox.showerror("Error", "Step must be numeric.")
+                        return
+
+                comp_data["states"] = spec
+
+            elif ctype == "observable":
+                unit = states_widgets["obs_unit"].get().strip()
+                if not unit:
+                    messagebox.showerror("Error", "Observable requires unit.")
+                    return
+
+                try:
+                    mn = float(states_widgets["obs_min"].get().strip())
+                    mx = float(states_widgets["obs_max"].get().strip())
+                except:
+                    messagebox.showerror("Error", "Observable requires numeric Min and Max.")
+                    return
+                if mx < mn:
+                    messagebox.showerror("Error", "Max must be >= Min.")
+                    return
+
+                spec = {"kind": "numeric", "min": mn, "max": mx, "unit": unit}
+                step_txt = states_widgets["obs_step"].get().strip()
+                if step_txt:
+                    try:
+                        spec["step"] = float(step_txt)
+                    except:
+                        messagebox.showerror("Error", "Step must be numeric.")
+                        return
+
+                comp_data["states"] = spec
+
+            else:
+                comp_data["states"] = None
+
+            # save
             if is_edit:
                 components[comp_idx] = comp_data
                 focus = ("component", cat, type_name, str(idx), str(comp_idx))
@@ -463,14 +726,8 @@ class LabInventoryApp(tk.Tk):
             win.destroy()
             self.after_change(focus_values=focus)
 
-        # -----------------------------
-        # Save Button (Always Visible)
-        # -----------------------------
-        ttk.Button(
-            win,
-            text="Save" if is_edit else "Add",
-            command=confirm
-        ).grid(row=row, column=1, pady=15, sticky="e")
+        ttk.Button(win, text="Save" if is_edit else "Add", command=confirm)\
+            .grid(row=row, column=1, pady=15, sticky="e")
 
         self.center_window(win)
         win.grab_set()
@@ -1028,9 +1285,25 @@ class LabInventoryApp(tk.Tk):
                 for item in items:
                     label = f"{tname}[{item['id']}]"
 
+                    # ---------------------------------
+                    # DERIVE FLAGS FROM STATES
+                    # ---------------------------------
+                    states = item.get("states", {})
+
+                    flags = []
+                    if "location" in states:
+                        flags.append("movable")
+                    if "quantity" in states:
+                        flags.append("container")
+
+                    if flags:
+                        label += " [" + ", ".join(flags) + "]"
+
+                    # Object actions summary
                     if cat != "material" and item.get("object_actions"):
                         label += f" ⚙{len(item['object_actions'])}"
 
+                    # Container material summary
                     if cat == "container" and item.get("contains"):
                         label += f" → {item['contains']['type_name']}"
 
@@ -1041,9 +1314,34 @@ class LabInventoryApp(tk.Tk):
                         values=("item", cat, tname, str(item["id"]))
                     )
 
+                    # -----------------------------
+                    # COMPONENTS
+                    # -----------------------------
                     if cat != "material":
                         for i, comp in enumerate(item.get("components", [])):
                             comp_label = f"{comp['name']} ({comp['type']})"
+
+                            # --- STATE SUMMARY ---
+                            states = comp.get("states")
+
+                            if isinstance(states, dict):
+                                if states.get("kind") == "enum":
+                                    if "values" in states:
+                                        n = len(states.get("values", []))
+                                        comp_label += f" Σ{n}"
+                                    elif "domain" in states:
+                                        comp_label += f" ⧉{states['domain']}"
+
+                                elif states.get("kind") == "numeric":
+                                    mn = states.get("min")
+                                    mx = states.get("max")
+                                    unit = states.get("unit", "")
+                                    if unit:
+                                        comp_label += f" [{mn}–{mx} {unit}]"
+                                    else:
+                                        comp_label += f" [{mn}–{mx}]"
+
+                            # --- ACTION SUMMARY ---
                             if comp.get("actions"):
                                 comp_label += f" ⚙{len(comp['actions'])}"
 
