@@ -43,15 +43,9 @@ OBJECT_ACTIONS = [
     "detach"
 ]
 
-INTERACTION_VERBS = [
-    "scoop_from",
-    "transfer_to",
-    "insert_into",
-    "place_on",
-    "attach_to",
-    "detach_from",
-    "mix_with",
-    "pour_into"
+INTERACTION_TYPES = [
+    "place",
+    "transfer"
 ]
 
 # -----------------------------
@@ -834,21 +828,54 @@ class LabInventoryApp(tk.Tk):
         self.center_window(win)
         win.grab_set()
 
+    def get_objects_with_state(self, state_name):
+        results = []
+        for cat in inventory:
+            for tname in inventory[cat]:
+                for item in inventory[cat][tname]:
+                    if state_name in item.get("states", {}):
+                        results.append((cat, tname, str(item["id"])))
+        return results
+
+
+    def get_receptor_components(self):
+        results = []
+        for cat in inventory:
+            for tname in inventory[cat]:
+                for item in inventory[cat][tname]:
+                    for comp in item.get("components", []):
+                        if comp.get("type") == "receptor":
+                            results.append((
+                                cat,
+                                tname,
+                                str(item["id"]),
+                                comp["name"]
+                            ))
+        return results
+
     def open_interaction_editor(self, interaction_id=None):
         is_edit = interaction_id is not None
         interaction = interactions[interaction_id] if is_edit else None
-        
+
         win = tk.Toplevel(self)
-        win.title("Add Interaction")
+        win.title("Edit Interaction" if is_edit else "Add Interaction")
         win.resizable(False, False)
 
         row = 0
 
         # -----------------------------
-        # SOURCE SECTION
+        # Interaction Type
+        # -----------------------------
+        ttk.Label(win, text="Interaction Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        type_cb = ttk.Combobox(win, values=["place", "transfer"], state="readonly", width=30)
+        type_cb.grid(row=row, column=1, padx=5, pady=5)
+        row += 1
+
+        # -----------------------------
+        # SOURCE
         # -----------------------------
         ttk.Label(win, text="Source Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        source_cat_cb = ttk.Combobox(win, values=list(inventory.keys()), state="readonly", width=30)
+        source_cat_cb = ttk.Combobox(win, state="readonly", width=30)
         source_cat_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
@@ -858,32 +885,16 @@ class LabInventoryApp(tk.Tk):
         row += 1
 
         ttk.Label(win, text="Source ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        source_id_cb = ttk.Combobox(win, width=30)
+        source_id_cb = ttk.Combobox(win, width=30, state="readonly")
         source_id_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        source_comp_label = ttk.Label(win, text="Source Component (optional)")
-        source_comp_label.grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        source_comp_cb = ttk.Combobox(win, width=30, state="readonly")
-        source_comp_cb.grid(row=row, column=1, padx=5, pady=5)
-        # Hide initially
-        source_comp_label.grid_remove()
-        source_comp_cb.grid_remove()
-        row += 1
-
+        # (No source component in your semantics)
         # -----------------------------
-        # VERB
-        # -----------------------------
-        ttk.Label(win, text="Verb *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        verb_cb = ttk.Combobox(win, values=INTERACTION_VERBS, state="readonly", width=30)
-        verb_cb.grid(row=row, column=1, padx=5, pady=5)
-        row += 1
-
-        # -----------------------------
-        # TARGET SECTION (same as source)
+        # TARGET
         # -----------------------------
         ttk.Label(win, text="Target Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        target_cat_cb = ttk.Combobox(win, values=list(inventory.keys()), state="readonly", width=30)
+        target_cat_cb = ttk.Combobox(win, state="readonly", width=30)
         target_cat_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
@@ -893,144 +904,271 @@ class LabInventoryApp(tk.Tk):
         row += 1
 
         ttk.Label(win, text="Target ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        target_id_cb = ttk.Combobox(win, width=30)
+        target_id_cb = ttk.Combobox(win, width=30, state="readonly")
         target_id_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        target_comp_label = ttk.Label(win, text="Target Component (optional)")
-        target_comp_label.grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        # Target component (ONLY for place)
+        target_comp_label = ttk.Label(win, text="Target Receptor Component *")
         target_comp_cb = ttk.Combobox(win, width=30, state="readonly")
+        target_comp_label.grid(row=row, column=0, padx=5, pady=5, sticky="w")
         target_comp_cb.grid(row=row, column=1, padx=5, pady=5)
-        # Hide initially
-        target_comp_label.grid_remove()
-        target_comp_cb.grid_remove()
         row += 1
+
+        # -----------------------------
+        # Candidate builders
+        # -----------------------------
+        def src_candidates():
+            """
+            Returns list of tuples (cat, type, id_str)
+            For place: objects with 'location'
+            For transfer: objects with 'quantity'
+            """
+            t = type_cb.get()
+            if t == "place":
+                return self.get_objects_with_state("location")
+            if t == "transfer":
+                return self.get_objects_with_state("quantity")
+            return []
+
+        def tgt_candidates_place_objects():
+            """
+            For place targets, we restrict to objects that HAVE at least one receptor component.
+            Return list of tuples (cat, type, id_str).
+            """
+            recs = self.get_receptor_components()  # (cat, type, id, comp_name)
+            return sorted({(c, t, i) for (c, t, i, comp) in recs})
+
+        def receptor_names_for_target(cat, tname, obj_id_or_star):
+            """
+            Return receptor component names for a specific object id OR "*" (use first instance).
+            """
+            if not cat or not tname or not obj_id_or_star:
+                return []
+
+            # pick a concrete id for "*" to inspect components
+            if obj_id_or_star == "*":
+                items = inventory.get(cat, {}).get(tname, [])
+                if not items:
+                    return []
+                item = items[0]
+            else:
+                try:
+                    item = inventory[cat][tname][int(obj_id_or_star)]
+                except Exception:
+                    return []
+
+            names = []
+            for comp in item.get("components", []):
+                if comp.get("type") == "receptor":
+                    names.append(comp.get("name"))
+            return names
+
+        def tgt_candidates_transfer():
+            """
+            For transfer targets: objects with 'quantity' only.
+            """
+            return self.get_objects_with_state("quantity")
+
+        # -----------------------------
+        # UI rebuild routines (constraint-driven)
+        # -----------------------------
+        def clear_source():
+            source_cat_cb.set(""); source_cat_cb["values"] = []
+            source_type_cb.set(""); source_type_cb["values"] = []
+            source_id_cb.set(""); source_id_cb["values"] = []
+
+        def clear_target():
+            target_cat_cb.set(""); target_cat_cb["values"] = []
+            target_type_cb.set(""); target_type_cb["values"] = []
+            target_id_cb.set(""); target_id_cb["values"] = []
+            target_comp_cb.set(""); target_comp_cb["values"] = []
+
+        def refresh_visibility():
+            # target receptor component is ONLY for place
+            if type_cb.get() == "place":
+                target_comp_label.grid()
+                target_comp_cb.grid()
+            else:
+                target_comp_label.grid_remove()
+                target_comp_cb.grid_remove()
+                target_comp_cb.set("")
+                target_comp_cb["values"] = []
+
+        def rebuild_all(event=None):
+            clear_source()
+            clear_target()
+            refresh_visibility()
+
+            t = type_cb.get()
+            if not t:
+                return
+
+            # Populate source categories
+            sc = src_candidates()
+            source_cat_cb["values"] = sorted(set(c for (c, tn, i) in sc))
+
+            # Populate target categories
+            if t == "place":
+                tc = tgt_candidates_place_objects()
+                target_cat_cb["values"] = sorted(set(c for (c, tn, i) in tc))
+            else:  # transfer
+                tc = tgt_candidates_transfer()
+                target_cat_cb["values"] = sorted(set(c for (c, tn, i) in tc))
 
         def update_source_types(event=None):
             cat = source_cat_cb.get()
-            source_type_cb["values"] = list(inventory.get(cat, {}).keys())
+            sc = src_candidates()
+            source_type_cb.set("")
+            source_id_cb.set("")
+            source_type_cb["values"] = sorted(set(tn for (c, tn, i) in sc if c == cat))
 
         def update_source_ids(event=None):
             cat = source_cat_cb.get()
-            t = source_type_cb.get()
-            ids = [str(item["id"]) for item in inventory.get(cat, {}).get(t, [])]
-            source_id_cb["values"] = ["*"] + ids
-
-        def update_source_components(event=None):
-            source_comp_cb.set("")
-            source_comp_cb["values"] = []
-
-            cat = source_cat_cb.get()
-            t = source_type_cb.get()
-            id_val = source_id_cb.get()
-
-            # Hide by default
-            source_comp_label.grid_remove()
-            source_comp_cb.grid_remove()
-
-            # Wildcard → no component
-            if id_val == "*" or not id_val:
-                return
-
-            item = inventory[cat][t][int(id_val)]
-            comps = [c["name"] for c in item.get("components", [])]
-
-            if comps:
-                source_comp_cb["values"] = [""] + comps
-                source_comp_label.grid()
-                source_comp_cb.grid()
+            tn = source_type_cb.get()
+            sc = src_candidates()
+            ids = [i for (c, tname, i) in sc if c == cat and tname == tn]
+            source_id_cb.set("")
+            source_id_cb["values"] = ["*"] + sorted(ids, key=lambda x: int(x))
 
         def update_target_types(event=None):
             cat = target_cat_cb.get()
-            target_type_cb["values"] = list(inventory.get(cat, {}).keys())
-
-        def update_target_ids(event=None):
-            cat = target_cat_cb.get()
-            t = target_type_cb.get()
-            ids = [str(item["id"]) for item in inventory.get(cat, {}).get(t, [])]
-            target_id_cb["values"] = ["*"] + ids
-
-        def update_target_components(event=None):
+            target_type_cb.set("")
+            target_id_cb.set("")
             target_comp_cb.set("")
             target_comp_cb["values"] = []
 
+            if type_cb.get() == "place":
+                tc = tgt_candidates_place_objects()
+            else:
+                tc = tgt_candidates_transfer()
+
+            target_type_cb["values"] = sorted(set(tn for (c, tn, i) in tc if c == cat))
+
+        def update_target_ids(event=None):
             cat = target_cat_cb.get()
-            t = target_type_cb.get()
-            id_val = target_id_cb.get()
+            tn = target_type_cb.get()
 
-            # Hide by default
-            target_comp_label.grid_remove()
-            target_comp_cb.grid_remove()
+            target_id_cb.set("")
+            target_comp_cb.set("")
+            target_comp_cb["values"] = []
 
-            # Wildcard → no component
-            if id_val == "*" or not id_val:
+            if type_cb.get() == "place":
+                tc = tgt_candidates_place_objects()
+            else:
+                tc = tgt_candidates_transfer()
+
+            ids = [i for (c, tname, i) in tc if c == cat and tname == tn]
+            target_id_cb["values"] = ["*"] + sorted(ids, key=lambda x: int(x))
+
+            # For transfer: no component
+            if type_cb.get() != "place":
                 return
 
-            item = inventory[cat][t][int(id_val)]
-            comps = [c["name"] for c in item.get("components", [])]
+            # For place: if user already has an id selected, populate receptors
+            # (otherwise we'll populate on id selection)
+            if target_id_cb.get():
+                comps = receptor_names_for_target(cat, tn, target_id_cb.get())
+                target_comp_cb["values"] = comps
 
-            if comps:
-                target_comp_cb["values"] = [""] + comps
-                target_comp_label.grid()
-                target_comp_cb.grid()
+        def update_target_components(event=None):
+            # Only for place
+            if type_cb.get() != "place":
+                return
+            cat = target_cat_cb.get()
+            tn = target_type_cb.get()
+            oid = target_id_cb.get()
+            comps = receptor_names_for_target(cat, tn, oid)
+            target_comp_cb.set("")
+            target_comp_cb["values"] = comps
+
+        # -----------------------------
+        # Bindings
+        # -----------------------------
+        type_cb.bind("<<ComboboxSelected>>", rebuild_all)
 
         source_cat_cb.bind("<<ComboboxSelected>>", update_source_types)
         source_type_cb.bind("<<ComboboxSelected>>", update_source_ids)
-        source_id_cb.bind("<<ComboboxSelected>>", update_source_components)
+
         target_cat_cb.bind("<<ComboboxSelected>>", update_target_types)
         target_type_cb.bind("<<ComboboxSelected>>", update_target_ids)
         target_id_cb.bind("<<ComboboxSelected>>", update_target_components)
-    
+
         # -----------------------------
-        # EDIT MODE PREFILL
+        # EDIT MODE PREFILL (ORDER MATTERS)
         # -----------------------------
         if is_edit:
+            # must set type first, then rebuild options, then set values in order
+            type_cb.set(interaction.get("type", ""))
+            rebuild_all()
+
             src = interaction["source"]
             tgt = interaction["target"]
 
+            # Source
             source_cat_cb.set(src["category"])
             update_source_types()
             source_type_cb.set(src["type"])
             update_source_ids()
             source_id_cb.set(str(src["id"]))
-            update_source_components()
-            if src.get("component"):
-                source_comp_cb.set(src["component"])
 
-            verb_cb.set(interaction["verb"])
-
+            # Target
             target_cat_cb.set(tgt["category"])
             update_target_types()
             target_type_cb.set(tgt["type"])
             update_target_ids()
             target_id_cb.set(str(tgt["id"]))
-            update_target_components()
-            if tgt.get("component"):
-                target_comp_cb.set(tgt["component"])
-       
-        def confirm():
 
-            if not source_cat_cb.get() or not source_type_cb.get() \
-               or not source_id_cb.get() or not verb_cb.get() \
-               or not target_cat_cb.get() or not target_type_cb.get() \
-               or not target_id_cb.get():
-                messagebox.showerror("Error", "All required fields must be selected.")
+            # Target component only for place
+            if type_cb.get() == "place":
+                update_target_components()
+                if tgt.get("component"):
+                    target_comp_cb.set(tgt["component"])
+
+        else:
+            # No default selection
+            type_cb.set("")
+            clear_source()
+            clear_target()
+            refresh_visibility()
+
+        # -----------------------------
+        # Confirm
+        # -----------------------------
+        def confirm():
+            t = type_cb.get()
+            if not t:
+                messagebox.showerror("Error", "Select interaction type.")
                 return
+
+            if not source_cat_cb.get() or not source_type_cb.get() or not source_id_cb.get():
+                messagebox.showerror("Error", "Select source (category/type/id).")
+                return
+
+            if not target_cat_cb.get() or not target_type_cb.get() or not target_id_cb.get():
+                messagebox.showerror("Error", "Select target (category/type/id).")
+                return
+
+            # place requires receptor component
+            if t == "place":
+                if not target_comp_cb.get():
+                    messagebox.showerror("Error", "Place requires a target receptor component.")
+                    return
 
             new_interaction = {
                 "id": interaction_id if is_edit else len(interactions),
+                "type": t,
                 "source": {
                     "category": source_cat_cb.get(),
                     "type": source_type_cb.get(),
                     "id": source_id_cb.get(),
-                    "component": source_comp_cb.get() or None
+                    "component": None
                 },
-                "verb": verb_cb.get(),
                 "target": {
                     "category": target_cat_cb.get(),
                     "type": target_type_cb.get(),
                     "id": target_id_cb.get(),
-                    "component": target_comp_cb.get() or None
+                    "component": target_comp_cb.get() if t == "place" else None
                 }
             }
 
@@ -1042,19 +1180,10 @@ class LabInventoryApp(tk.Tk):
             save_inventory()
             win.destroy()
             self.refresh_tree()
-
-            # Expand interactions tree automatically
-            for node in self.tree.get_children(""):
-                if self.tree.item(node, "text") == "interactions":
-                    self.tree.item(node, open=True)
-
             self.refresh_json()
 
-        ttk.Button(
-            win,
-            text="Save" if is_edit else "Add",
-            command=confirm
-        ).grid(row=row, column=1, pady=15, sticky="e")
+        ttk.Button(win, text="Save" if is_edit else "Add", command=confirm)\
+            .grid(row=row, column=1, pady=15, sticky="e")
 
         self.center_window(win)
         win.grab_set()
@@ -1367,7 +1496,7 @@ class LabInventoryApp(tk.Tk):
                     base += f".{e['component']}"
                 return base
 
-            label = f"{format_entity(src)} --{inter['verb']}--> {format_entity(tgt)}"
+            label = f"{format_entity(src)} --{inter['type']}--> {format_entity(tgt)}"
 
             self.tree.insert(
                 interactions_root,
