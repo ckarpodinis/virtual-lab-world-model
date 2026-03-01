@@ -27,10 +27,10 @@ COMPONENT_STATE_SPECS = {
         "kind": "enum",
         "values": ["released", "pressed"]
     },
-    "receptor": {
-        "kind": "enum",
-        "values": ["empty", "occupied"]
-    }
+    #"receptor": {
+    #    "kind": "enum",
+    #    "values": ["empty", "occupied"]
+    #}
     # others configured by user in UI
 }
 
@@ -197,6 +197,41 @@ class LabInventoryApp(tk.Tk):
             self.open_component_editor(values[1], values[2], int(values[3]), int(values[4]))
         elif values[0] == "interaction":
             self.open_interaction_editor(int(values[1]))
+
+    def get_receptor_domain(self, cat, type_name, obj_id, comp_name):
+        """
+        Returns domain for a receptor component:
+        { "empty" } ∪ eligible objects from place interactions.
+        """
+
+        domain = ["empty"]
+
+        for inter in interactions:
+            if inter.get("type") != "place":
+                continue
+
+            tgt = inter["target"]
+
+            if tgt["category"] != cat:
+                continue
+            if tgt["type"] != type_name:
+                continue
+            if tgt.get("component") != comp_name:
+                continue
+
+            src = inter["source"]
+
+            # wildcard source
+            if src["id"] == "*":
+                items = inventory[src["category"]][src["type"]]
+                for item in items:
+                    label = f"{src['category']}:{src['type']}[{item['id']}]"
+                    domain.append(label)
+            else:
+                label = f"{src['category']}:{src['type']}[{src['id']}]"
+                domain.append(label)
+
+        return sorted(set(domain))
 
     # -----------------------------
     # ITEM EDITOR (Unified Add/Edit)
@@ -645,7 +680,14 @@ class LabInventoryApp(tk.Tk):
             # -----------------------------
             # Build typed 'states'
             # -----------------------------
-            if ctype in COMPONENT_STATE_SPECS:
+    
+            # Receptor → dynamic domain (computed later in MDP generation)
+            if ctype == "receptor":
+                comp_data["states"] = {
+                    "kind": "dynamic_receptor"
+                }
+
+            elif ctype in COMPONENT_STATE_SPECS:
                 comp_data["states"] = copy.deepcopy(COMPONENT_STATE_SPECS[ctype])
 
             elif ctype == "selector control":
@@ -1454,14 +1496,16 @@ class LabInventoryApp(tk.Tk):
                             states = comp.get("states")
 
                             if isinstance(states, dict):
-                                if states.get("kind") == "enum":
-                                    if "values" in states:
-                                        n = len(states.get("values", []))
-                                        comp_label += f" Σ{n}"
-                                    elif "domain" in states:
-                                        comp_label += f" ⧉{states['domain']}"
 
-                                elif states.get("kind") == "numeric":
+                                kind = states.get("kind")
+
+                                # Static enum
+                                if kind == "enum":
+                                    n = len(states.get("values", []))
+                                    comp_label += f" Σ{n}"
+
+                                # Numeric
+                                elif kind == "numeric":
                                     mn = states.get("min")
                                     mx = states.get("max")
                                     unit = states.get("unit", "")
@@ -1469,6 +1513,11 @@ class LabInventoryApp(tk.Tk):
                                         comp_label += f" [{mn}–{mx} {unit}]"
                                     else:
                                         comp_label += f" [{mn}–{mx}]"
+
+                                # Dynamic receptor
+                                elif kind == "dynamic_receptor":
+                                    domain = self.get_receptor_domain(cat, tname, item["id"], comp["name"])
+                                    comp_label += f" ⟨{', '.join(domain)}⟩"
 
                             # --- ACTION SUMMARY ---
                             if comp.get("actions"):
