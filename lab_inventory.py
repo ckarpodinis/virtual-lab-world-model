@@ -3,6 +3,7 @@ import json
 import copy
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import filedialog
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -23,10 +24,10 @@ COMPONENT_STATE_SPECS = {
         "kind": "enum",
         "values": [0, 1]
     },
-    "momentary control": {
-        "kind": "enum",
-        "values": ["released", "pressed"]
-    },
+    #"momentary control": {
+    #    "kind": "enum",
+    #    "values": ["released", "pressed"]
+    #},
     #"receptor": {
     #    "kind": "enum",
     #    "values": ["empty", "occupied"]
@@ -133,6 +134,7 @@ class LabInventoryApp(tk.Tk):
         self.refresh_json()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.current_right_panel_filename = "inventory.json"
 
     # -----------------------------
     # UI
@@ -157,6 +159,7 @@ class LabInventoryApp(tk.Tk):
         ttk.Button(control_frame, text="Delete Selected", command=self.delete_selected).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Clone Selected", command=self.clone_selected).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Add Interaction", command=self.open_interaction_editor).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Generate MDP Template", command=self.generate_selected_mdp).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Visualize Graph", command=self.visualize_graph).pack(fill=tk.X, pady=5)
 
         self.tree = ttk.Treeview(left_frame, show="tree")
@@ -169,11 +172,18 @@ class LabInventoryApp(tk.Tk):
         right_frame = ttk.Frame(main_pane)
         main_pane.add(right_frame, weight=2)  # smaller weight → narrower
 
-        ttk.Label(right_frame, text="Inventory JSON").pack(anchor=tk.W)
+        ttk.Label(right_frame, text="JSON Viewer").pack(anchor=tk.W)
 
+        # Toolbar for the JSON viewer
+        json_toolbar = ttk.Frame(right_frame)
+        json_toolbar.pack(fill=tk.X, pady=(2, 4))
+
+        ttk.Button( json_toolbar, text="Show Inventory", command=self.show_inventory_json).pack(side=tk.LEFT, padx=2)
+        ttk.Button( json_toolbar, text="Save JSON", command=self.save_right_panel_json).pack(side=tk.LEFT, padx=2)
+
+        # JSON text container
         json_container = ttk.Frame(right_frame)
         json_container.pack(fill=tk.BOTH, expand=True)
-
         scroll = ttk.Scrollbar(json_container)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -1557,6 +1567,7 @@ class LabInventoryApp(tk.Tk):
     def refresh_json(self):
         self.json_text.delete("1.0", tk.END)
         self.json_text.insert(tk.END, json.dumps(world, indent=2))
+        self.current_right_panel_filename = "inventory.json"
 
     def center_window(self, win):
         win.update_idletasks()
@@ -1592,6 +1603,226 @@ class LabInventoryApp(tk.Tk):
 
         # Open editor in clone mode
         self.open_item_editor_clone(cat, type_name, cloned_item)
+
+    def generate_object_mdp_template(self, cat, type_name, obj_id):
+
+        def norm(x):
+            return x.replace(" ", "_")
+
+        obj = inventory[cat][type_name][int(obj_id)]
+
+        template = {
+            "object": f"{cat}:{norm(type_name)}[{obj_id}]",
+            "states": [],
+            "actions": []
+        }
+
+        # -------------------------------------------------
+        # 1️⃣ STATES
+        # -------------------------------------------------
+        for state_name, spec in obj.get("states", {}).items():
+
+            state_entry = {
+                "name": norm(state_name),
+                "kind": spec["kind"]
+            }
+
+            if spec["kind"] == "enum":
+                state_entry["values"] = spec.get("values", [])
+            elif spec["kind"] == "numeric":
+                state_entry["min"] = spec.get("min")
+                state_entry["max"] = spec.get("max")
+
+            template["states"].append(state_entry)
+
+        for comp in obj.get("components", []):
+
+            comp_name = norm(comp["name"])
+            states = comp.get("states")
+
+            if not states:
+                continue
+
+            if states.get("kind") == "dynamic_receptor":
+
+                domain = self.get_receptor_domain(cat, type_name, obj_id, comp["name"])
+
+                template["states"].append({
+                    "name": comp_name,
+                    "kind": "enum",
+                    "values": domain
+                })
+
+            elif states.get("kind") == "enum":
+                template["states"].append({
+                    "name": comp_name,
+                    "kind": "enum",
+                    "values": states.get("values", [])
+                })
+
+            elif states.get("kind") == "numeric":
+                template["states"].append({
+                    "name": comp_name,
+                    "kind": "numeric",
+                    "min": states.get("min"),
+                    "max": states.get("max")
+                })
+
+        # -------------------------------------------------
+        # 2️⃣ INTRINSIC + COMPONENT ACTIONS (WITH EFFECTS)
+        # -------------------------------------------------
+        for comp in obj.get("components", []):
+
+            comp_name = norm(comp["name"])
+
+            for action in comp.get("actions", []):
+
+                action_name = f"{comp_name}.{norm(action)}"
+
+                effect = {}
+
+                # Basic semantics by component type
+                if comp.get("type") == "binary control":
+                    effect[comp_name] = "toggle"
+
+                elif comp.get("type") == "momentary control":
+                    effect = {"trigger": comp_name}
+
+                elif comp.get("type") == "selector control":
+                    effect[comp_name] = "selected_value"
+
+                elif comp.get("type") == "continuous control":
+                    effect[comp_name] = "updated_numeric_value"
+
+                elif comp.get("type") == "observable":
+                    effect = {}  # read-only
+
+                template["actions"].append({
+                    "name": action_name,
+                    "type": "component",
+                    "effect": effect
+                })
+
+        # -------------------------------------------------
+        # 3️⃣ INTERACTION ACTIONS
+        # -------------------------------------------------
+        for inter in interactions:
+
+            inter_type = inter.get("type")
+            src = inter["source"]
+            tgt = inter["target"]
+
+            def matches(entity):
+                if entity["category"] != cat:
+                    return False
+                if entity["type"] != type_name:
+                    return False
+                if entity["id"] == "*":
+                    return True
+                return str(entity["id"]) == str(obj_id)
+
+            if not (matches(src) or matches(tgt)):
+                continue
+
+            action_name = inter_type
+
+            effect = {}
+
+            if inter_type == "place":
+
+                # Only target object gets receptor update
+                if matches(tgt):
+                    receptor = norm(tgt.get("component"))
+                    effect[receptor] = "<source_object>"
+                    effect["external_update"] = (
+                        "<source_object>.location := " + receptor
+                    )
+
+            elif inter_type == "transfer":
+
+                if matches(src):
+                    effect["quantity"] = "quantity - delta"
+                    effect["external_update"] = (
+                        "<target_object>.quantity := + delta"
+                    )
+
+                elif matches(tgt):
+                    effect["quantity"] = "quantity + delta"
+                    effect["external_update"] = (
+                        "<source_object>.quantity := - delta"
+                    )
+
+            template["actions"].append({
+                "name": action_name,
+                "type": "interaction",
+                "parameters": ["other_object"],
+                "effect": effect
+            })
+
+        # -------------------------------------------------
+        # Remove duplicates
+        # -------------------------------------------------
+        unique = {}
+        for a in template["actions"]:
+            unique[a["name"]] = a
+
+        template["actions"] = list(unique.values())
+
+        return template
+
+    def generate_selected_mdp(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showerror("Error", "Select an object first.")
+            return
+
+        values = self.tree.item(sel[0], "values")
+
+        if not values or values[0] != "item":
+            messagebox.showerror("Error", "Select an object (not component).")
+            return
+
+        cat, type_name, obj_id = values[1], values[2], values[3]
+
+        template = self.generate_object_mdp_template(cat, type_name, obj_id)
+
+        # Display result in JSON preview
+        self.json_text.delete("1.0", tk.END)
+        self.json_text.insert(tk.END, json.dumps(template, indent=2))
+
+        # ---- Set suggested filename for saving ----
+        safe_type = type_name.replace(" ", "_")
+        self.current_right_panel_filename = f"{cat}_{safe_type}_{obj_id}_mdp_template.json"
+
+    def show_inventory_json(self):
+        self.refresh_json()
+
+    def save_right_panel_json(self):
+
+        content = self.json_text.get("1.0", tk.END).strip()
+
+        if not content:
+            messagebox.showerror("Error", "Nothing to save.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save JSON",
+            defaultextension=".json",
+            initialfile=self.current_right_panel_filename,
+            filetypes=[("JSON files", "*.json")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            messagebox.showinfo("Saved", f"File saved:\n{file_path}")
+
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     # -----------------------------
     # Graph View
