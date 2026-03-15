@@ -27,13 +27,13 @@ def build_world_model(filename):
             counts[(s, a)][ns]["count"] += 1
             counts[(s, a)][ns]["reward_sum"] += r
 
-    model = {}
+    model = []
 
     for (s, a), next_states in counts.items():
 
         total = sum(v["count"] for v in next_states.values())
 
-        transitions = {}
+        transitions = []
         expected_reward = 0
 
         for ns, data in next_states.items():
@@ -41,41 +41,53 @@ def build_world_model(filename):
             prob = data["count"] / total
             avg_reward = data["reward_sum"] / data["count"]
 
-            transitions[ns] = {
+            expected_reward += prob * avg_reward
+
+            transitions.append({
+                "next_state": decode_state(ns),
                 "probability": prob,
                 "count": data["count"],
                 "reward_sum": data["reward_sum"],
                 "avg_reward": avg_reward
-            }
+            })
 
-            expected_reward += prob * avg_reward
-
-        model[(s, a)] = {
+        model.append({
+            "state": decode_state(s),
+            "action": a,
             "expected_reward": expected_reward,
             "transitions": transitions
-        }
+        })
 
     return model
 
+
 def print_model(model):
 
-    for (s, a), data in model.items():
+    for entry in model:
 
-        print("\nSTATE:", decode_state(s))
-        print("ACTION:", a)
-        print("EXPECTED REWARD:", round(data["expected_reward"], 3))
+        print("\nSTATE:", entry["state"])
+        print("ACTION:", entry["action"])
+        print("EXPECTED REWARD:", round(entry["expected_reward"], 3))
         print("TRANSITIONS:")
 
-        for ns, tdata in data["transitions"].items():
-
+        for t in entry["transitions"]:
             print(
                 "  ->",
-                decode_state(ns),
-                f"(p={tdata['probability']:.3f}, "
-                f"count={tdata['count']}, "
-                f"reward_sum={tdata['reward_sum']}, "
-                f"avg_reward={tdata['avg_reward']:.2f})"
+                t["next_state"],
+                f"(p={t['probability']:.3f}, "
+                f"count={t['count']}, "
+                f"reward_sum={t['reward_sum']}, "
+                f"avg_reward={t['avg_reward']:.2f})"
             )
+
+
+def save_model(model, outfile):
+
+    with open(outfile, "w") as f:
+        json.dump(model, f, indent=2)
+
+    print(f"\nWorld model saved to {outfile}")
+
 
 def main():
 
@@ -83,13 +95,27 @@ def main():
         description="Build tabular world model from transition logs"
     )
 
-    parser.add_argument("input", help="JSONL transitions file")
+    parser.add_argument(
+        "input",
+        help="JSONL transitions file"
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="world_model.json",
+        help="Output JSON file"
+    )
 
     args = parser.parse_args()
 
     model = build_world_model(args.input)
 
+    # print to console
     print_model(model)
+
+    # save to file
+    save_model(model, args.output)
 
 
 if __name__ == "__main__":

@@ -592,36 +592,102 @@ class LabInventoryApp(tk.Tk):
 
             # Observable -> numeric + unit
             if ctype == "observable":
-                ttk.Label(states_frame, text="Min *") \
-                    .grid(row=1, column=0, sticky="w", padx=5, pady=3)
-                min_e = ttk.Entry(states_frame, width=14)
-                min_e.grid(row=1, column=1, padx=5, pady=3, sticky="w")
 
-                ttk.Label(states_frame, text="Max *") \
-                    .grid(row=2, column=0, sticky="w", padx=5, pady=3)
-                max_e = ttk.Entry(states_frame, width=14)
-                max_e.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+                mode_var = tk.StringVar(value="numeric")
 
-                ttk.Label(states_frame, text="Step (optional)") \
-                    .grid(row=3, column=0, sticky="w", padx=5, pady=3)
-                step_e = ttk.Entry(states_frame, width=14)
-                step_e.grid(row=3, column=1, padx=5, pady=3, sticky="w")
+                # --- symbolic widgets ---
+                values_label = ttk.Label(states_frame, text="Values")
+                values_entry = ttk.Entry(states_frame, width=30)
 
-                ttk.Label(states_frame, text="Unit *") \
-                    .grid(row=4, column=0, sticky="w", padx=5, pady=3)
+                # --- numeric widgets ---
+                min_label = ttk.Label(states_frame, text="Min")
+                min_e = ttk.Entry(states_frame, width=10)
+
+                max_label = ttk.Label(states_frame, text="Max")
+                max_e = ttk.Entry(states_frame, width=10)
+
+                unit_label = ttk.Label(states_frame, text="Unit")
                 unit_e = ttk.Entry(states_frame, width=10)
-                unit_e.grid(row=4, column=1, padx=5, pady=3, sticky="w")
 
-                if isinstance(existing_states, dict) and existing_states.get("kind") == "numeric":
-                    min_e.insert(0, str(existing_states.get("min", "")))
-                    max_e.insert(0, str(existing_states.get("max", "")))
-                    if "step" in existing_states:
-                        step_e.insert(0, str(existing_states["step"]))
-                    unit_e.insert(0, str(existing_states.get("unit", "")))
+                # -------- toggle logic --------
+                def update_obs_mode():
 
+                    if mode_var.get() == "symbolic":
+
+                        min_label.grid_remove()
+                        min_e.grid_remove()
+
+                        max_label.grid_remove()
+                        max_e.grid_remove()
+
+                        unit_label.grid_remove()
+                        unit_e.grid_remove()
+
+                        values_label.grid(row=1, column=0, sticky="w")
+                        values_entry.grid(row=1, column=1, columnspan=2, sticky="w")
+
+                    else:
+
+                        values_label.grid_remove()
+                        values_entry.grid_remove()
+
+                        min_label.grid(row=1, column=0, sticky="w")
+                        min_e.grid(row=1, column=1, sticky="w")
+
+                        max_label.grid(row=2, column=0, sticky="w")
+                        max_e.grid(row=2, column=1, sticky="w")
+
+                        unit_label.grid(row=3, column=0, sticky="w")
+                        unit_e.grid(row=3, column=1, sticky="w")
+
+                # -------- observable type selector --------
+                ttk.Label(states_frame, text="Observable Type").grid(row=0, column=0, sticky="w")
+
+                mode_numeric = ttk.Radiobutton(
+                    states_frame,
+                    text="Numeric",
+                    variable=mode_var,
+                    value="numeric",
+                    command=update_obs_mode
+                )
+
+                mode_symbolic = ttk.Radiobutton(
+                    states_frame,
+                    text="Symbolic",
+                    variable=mode_var,
+                    value="symbolic",
+                    command=update_obs_mode
+                )
+
+                mode_numeric.grid(row=0, column=1, sticky="w")
+                mode_symbolic.grid(row=0, column=2, sticky="w")
+                
+                # -----------------------------
+                # Prefill existing observable states
+                # -----------------------------
+                if isinstance(existing_states, dict):
+
+                    if existing_states.get("kind") == "enum":
+
+                        mode_var.set("symbolic")
+
+                        values = existing_states.get("values", [])
+                        values_entry.insert(0, ", ".join(map(str, values)))
+
+                    elif existing_states.get("kind") == "numeric":
+
+                        mode_var.set("numeric")
+
+                        min_e.insert(0, str(existing_states.get("min", "")))
+                        max_e.insert(0, str(existing_states.get("max", "")))
+                        unit_e.insert(0, str(existing_states.get("unit", "")))
+
+                update_obs_mode()
+
+                states_widgets["obs_mode"] = mode_var
+                states_widgets["obs_values"] = values_entry
                 states_widgets["obs_min"] = min_e
                 states_widgets["obs_max"] = max_e
-                states_widgets["obs_step"] = step_e
                 states_widgets["obs_unit"] = unit_e
                 return
 
@@ -731,31 +797,40 @@ class LabInventoryApp(tk.Tk):
                 comp_data["states"] = spec
 
             elif ctype == "observable":
-                unit = states_widgets["obs_unit"].get().strip()
-                if not unit:
-                    messagebox.showerror("Error", "Observable requires unit.")
-                    return
 
-                try:
-                    mn = float(states_widgets["obs_min"].get().strip())
-                    mx = float(states_widgets["obs_max"].get().strip())
-                except:
-                    messagebox.showerror("Error", "Observable requires numeric Min and Max.")
-                    return
-                if mx < mn:
-                    messagebox.showerror("Error", "Max must be >= Min.")
-                    return
+                mode = states_widgets["obs_mode"].get()
 
-                spec = {"kind": "numeric", "min": mn, "max": mx, "unit": unit}
-                step_txt = states_widgets["obs_step"].get().strip()
-                if step_txt:
-                    try:
-                        spec["step"] = float(step_txt)
-                    except:
-                        messagebox.showerror("Error", "Step must be numeric.")
+                if mode == "symbolic":
+
+                    raw = states_widgets["obs_values"].get().strip()
+                    values = [v.strip() for v in raw.split(",") if v.strip()]
+
+                    if not values:
+                        messagebox.showerror("Error", "Observable symbolic values required.")
                         return
 
-                comp_data["states"] = spec
+                    comp_data["states"] = {
+                        "kind": "enum",
+                        "values": values
+                    }
+
+                else:
+
+                    try:
+                        mn = float(states_widgets["obs_min"].get())
+                        mx = float(states_widgets["obs_max"].get())
+                    except:
+                        messagebox.showerror("Error", "Numeric observable requires min/max.")
+                        return
+
+                    unit = states_widgets["obs_unit"].get().strip()
+
+                    comp_data["states"] = {
+                        "kind": "numeric",
+                        "min": mn,
+                        "max": mx,
+                        "unit": unit
+                    }
 
             else:
                 comp_data["states"] = None

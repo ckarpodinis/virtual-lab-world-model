@@ -41,16 +41,54 @@ TASK
 ----
 Generate {N} independent MDP transitions.
 
-For each transition follow two steps:
+Each transition describes how the system evolves after an action.
+
+STATE VALIDITY
+--------------
+A valid state must assign values to ALL state variables defined in the template.
+
+Each variable must respect its domain:
+
+- enum variables must use one of the listed values
+- numeric variables must remain within their min/max range
+
+Both "state" and "next_state" must be valid states.
+
+Never invent new state variables.
+Never omit existing state variables.
+
+TRANSITION TYPES
+----------------
+Generate a mixture of VALID and INVALID transitions.
+
+VALID transitions represent correct operation of the instrument.
+They should follow realistic usage of the system and produce
+a plausible next_state after the action.
+
+INVALID transitions represent incorrect usage of the instrument.
+They violate the correct operation logic of the system.
+
+Examples of INVALID transitions may include:
+- executing an action while the system is in an inappropriate state
+- producing a next_state that does not correspond to the expected effect of the action
+- changing state variables that should normally remain unchanged
+
+Even INVALID transitions must still respect the state variable domains
+defined in the template.
+
+TRANSITION GENERATION
+---------------------
+For each transition follow two steps.
 
 STEP 1 — GENERATE
+
 Create a transition consisting of:
 
 - state
 - action
 - next_state
 
-state must assign values to all state variables defined in the template.
+state must be a valid assignment of all state variables.
 
 action must be one of the actions defined in the template.
 If the action has parameters, instantiate them with plausible values.
@@ -59,13 +97,26 @@ next_state should represent the state after the action.
 
 Use intuition about how the system might behave.
 
+Transitions should normally modify only the variables that are plausibly
+affected by the action. Unrelated variables should usually remain unchanged.
+
 STEP 2 — JUDGE
+
 Evaluate the generated transition.
 
-Assign:
+Assign the reward based on the transition type:
 
-reward = 1 if the transition appears logically plausible.
-reward = 0 if the transition appears inconsistent or unrealistic.
+reward = 1 for VALID transitions
+reward = 0 for INVALID transitions
+
+Imperfect reasoning is allowed.
+Mistakes should resemble realistic incorrect usage rather than random noise.
+
+DATASET DIVERSITY
+-----------------
+Generate diverse states and actions.
+Avoid repeating the same state combinations.
+Explore different combinations of state variables.
 
 OUTPUT FORMAT
 -------------
@@ -84,13 +135,10 @@ The JSON object must have the following structure:
   ]
 }
 
-RULES
------
-- Use only the state variables defined in the template.
-- Respect the variable domains (enum values and numeric ranges).
-- Do not invent new state variables.
-- Do not include explanations or comments.
-- Do not include extra text.
+Do not include explanations.
+Do not include comments.
+Do not include markdown code fences.
+Do not include any text outside the JSON object.
 """
 
 
