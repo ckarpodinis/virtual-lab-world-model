@@ -195,3 +195,89 @@ for action in sorted(by_action):
         for e in ambig:
             state_str = ",  ".join(f"{k}={repr(e['state'][k])}" for k in state_keys)
             print(f"      reward={e['expected_reward']:.3f}  |  {state_str}")
+
+# ── 6. Precedence rules ───────────────────────────────────────────────────────
+# A precedence rule requires BOTH sides to be confirmed:
+#   - NECESSARY  feature=V  on action A → A requires this value to be valid
+#   - FORBIDDEN  feature=V' on action A → A is invalid without it
+# Together: something must have set feature from V' → V before A runs.
+# We look up which (action, transition) produces next_state[feature]=V
+# to name the predecessor precisely.
+ 
+print("\n" + "=" * 70)
+print("FINAL RULES")
+print("=" * 70)
+ 
+# Build lookup: (feature, value) -> [(action_that_produces_it, value_before), ...]
+producer_map = defaultdict(list)   # (feature, value) -> [(action, old_val, avg_reward)]
+for e in entries:
+    for t in e["transitions"]:
+        for feature, new_val in t["next_state"].items():
+            old_val = e["state"].get(feature)
+            if old_val != new_val:   # only record actual state changes
+                producer_map[(feature, new_val)].append(
+                    (e["action"], old_val, t["avg_reward"])
+                )
+ 
+# For each (feature, value), keep only producers whose avg_reward equals
+# the maximum observed AND is above the valid threshold.
+# If the best available producer is below threshold, no reliable producer
+# exists in the data — we leave the list empty rather than emit a noisy rule.
+for key in producer_map:
+    max_reward = max(r for _, _, r in producer_map[key])
+    if max_reward < VALID_THRESHOLD:
+        producer_map[key] = []   # no trustworthy producer found
+    else:
+        producer_map[key] = [
+            (action, old_val)
+            for action, old_val, r in producer_map[key]
+            if r == max_reward
+        ]
+        producer_map[key] = list(dict.fromkeys(producer_map[key]))  # deduplicate
+ 
+precedence_rules = []
+ 
+for action_a in sorted(by_action):
+    entries_a = by_action[action_a]
+    rules_a   = extract_rules(entries_a)
+ 
+    if "note" in rules_a:
+        continue
+ 
+    for feature, val_map in rules_a.items():
+        necessary_vals = [v for v, role in val_map.items() if role == "NECESSARY"]
+        forbidden_vals = [v for v, role in val_map.items() if role == "FORBIDDEN"]
+ 
+        # Only emit a precedence rule when BOTH sides are present
+        if not necessary_vals or not forbidden_vals:
+            continue
+ 
+        for nec_val in necessary_vals:
+            producers = producer_map.get((feature, nec_val), [])
+            producers = [(a, v) for (a, v) in producers if a != action_a]  # exclude self-loops
+            if producers:
+                for (action_b, from_val) in producers:
+                    precedence_rules.append((action_b, feature, nec_val, action_a,
+                                             feature, forbidden_vals))
+            else:
+                # No trusted producer found — emit rule without naming an action
+                precedence_rules.append((None, feature, nec_val, action_a,
+                                         feature, forbidden_vals))
+ 
+if precedence_rules:
+    seen = set()
+    for (action_b, feature, value, action_a, feat, forbidden) in sorted(precedence_rules, key=lambda x: (x[3], x[1], str(x[0]))):
+        key = (action_b, feature, value, action_a)
+        if key in seen:
+            continue
+        seen.add(key)
+        if action_b:
+            label = f"'{action_b} {feature}={repr(value)}'"
+        else:
+            label = f"'{feature}={repr(value)}'"
+        print(f"\n  {label}  must precede  '{action_a}'")
+        #print(f"    because '{action_a}' NECESSARY  {feature} = {repr(value)}")
+        #print(f"    and     '{action_a}' FORBIDDEN  {feature} ∈ {forbidden}")
+else:
+    print("\n  No precedence rules found with current threshold.")
+print("\n")
