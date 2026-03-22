@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 INVENTORY_FILE = "inventory.json"
 
 COMPONENT_TYPES = {
-    "binary control": ["toggle", "open", "close"],
+    "binary control": ["toggle", "open", "close", "set"],
     "momentary control": ["press"],
     "continuous control": ["set", "increase", "decrease"],
     "selector control": ["select"],
@@ -540,13 +540,37 @@ class LabInventoryApp(tk.Tk):
         def build_states_ui(ctype, existing_states=None):
             clear_states_frame()
 
-            # Predefined enum state specs
+            # Predefined enum state specs (e.g. binary control: [0, 1])
             if ctype in COMPONENT_STATE_SPECS:
                 spec = COMPONENT_STATE_SPECS[ctype]
+                defaults = spec["values"]
+
                 ttk.Label(
                     states_frame,
-                    text=f"Predefined enum states: {spec['values']}"
-                ).pack(anchor="w", padx=6, pady=6)
+                    text=f"Default states: {defaults}"
+                ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 2))
+
+                ttk.Label(
+                    states_frame,
+                    text="Custom labels (optional, comma-separated):"
+                ).grid(row=1, column=0, sticky="w", padx=6, pady=(2, 3))
+
+                custom_e = ttk.Entry(states_frame, width=30)
+                custom_e.grid(row=1, column=1, sticky="w", padx=6, pady=(2, 3))
+
+                ttk.Label(
+                    states_frame,
+                    text=f"e.g.  off, on  —  leave blank to keep {defaults}",
+                    foreground="gray"
+                ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 4))
+
+                # Prefill if editing and custom values were previously saved
+                if isinstance(existing_states, dict) and existing_states.get("kind") == "enum":
+                    saved_vals = existing_states.get("values", defaults)
+                    if saved_vals != defaults:
+                        custom_e.insert(0, ", ".join(map(str, saved_vals)))
+
+                states_widgets["binary_custom"] = custom_e
                 return
 
             # Selector control -> enum
@@ -764,7 +788,21 @@ class LabInventoryApp(tk.Tk):
                 }
 
             elif ctype in COMPONENT_STATE_SPECS:
-                comp_data["states"] = copy.deepcopy(COMPONENT_STATE_SPECS[ctype])
+                spec = copy.deepcopy(COMPONENT_STATE_SPECS[ctype])
+                raw_custom = states_widgets.get("binary_custom", None)
+                if raw_custom is not None:
+                    custom_text = raw_custom.get().strip()
+                    if custom_text:
+                        custom_vals = [v.strip() for v in custom_text.split(",") if v.strip()]
+                        if len(custom_vals) != len(spec["values"]):
+                            messagebox.showerror(
+                                "Error",
+                                f"Binary control requires exactly {len(spec['values'])} custom labels "
+                                f"(got {len(custom_vals)})."
+                            )
+                            return
+                        spec["values"] = custom_vals
+                comp_data["states"] = spec
 
             elif ctype == "selector control":
                 raw = states_widgets["selector_values"].get().strip()
