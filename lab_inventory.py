@@ -209,39 +209,30 @@ class LabInventoryApp(tk.Tk):
             self.open_interaction_editor(int(values[1]))
 
     def get_receptor_domain(self, cat, type_name, obj_id, comp_name):
-        """
-        Returns domain for a receptor component:
-        { "empty" } ∪ eligible objects from place interactions.
-        """
-
-        domain = ["empty"]
-
-        for inter in interactions:
-            if inter.get("type") != "place":
-                continue
-
-            tgt = inter["target"]
-
-            if tgt["category"] != cat:
-                continue
-            if tgt["type"] != type_name:
-                continue
-            if tgt.get("component") != comp_name:
-                continue
-
-            src = inter["source"]
-
-            # wildcard source
-            if src["id"] == "*":
-                items = inventory[src["category"]][src["type"]]
-                for item in items:
-                    label = f"{src['category']}:{src['type']}[{item['id']}]"
+            """
+            Returns domain for a receptor component:
+            { "empty" } ∪ eligible objects from place interactions.
+            """
+            domain = ["empty"]
+            for inter in interactions:
+                if inter.get("type") != "place":
+                    continue
+                tgt = inter["target"]
+                if tgt["category"] != cat:
+                    continue
+                if tgt["type"] != type_name:
+                    continue
+                if tgt.get("component") != comp_name:
+                    continue
+                src = inter["source"]
+                # wildcard source
+                if src["id"] == "*":
+                    label = f"{src['category']}:{src['type']}"
                     domain.append(label)
-            else:
-                label = f"{src['category']}:{src['type']}[{src['id']}]"
-                domain.append(label)
-
-        return sorted(set(domain))
+                else:
+                    label = f"{src['category']}:{src['type']}[{src['id']}]"
+                    domain.append(label)
+            return sorted(set(domain))
 
     # -----------------------------
     # ITEM EDITOR (Unified Add/Edit)
@@ -1718,61 +1709,46 @@ class LabInventoryApp(tk.Tk):
         self.open_item_editor_clone(cat, type_name, cloned_item)
 
     def generate_object_mdp_template(self, cat, type_name, obj_id):
-
         def norm(x):
             return x.replace(" ", "_")
-
         obj = inventory[cat][type_name][int(obj_id)]
-
         template = {
             "object": f"{cat}:{norm(type_name)}[{obj_id}]",
             "states": [],
             "actions": []
         }
-
         # -------------------------------------------------
         # 1️⃣ STATES
         # -------------------------------------------------
         for state_name, spec in obj.get("states", {}).items():
-
             state_entry = {
                 "name": norm(state_name),
                 "kind": spec["kind"]
             }
-
             if spec["kind"] == "enum":
                 state_entry["values"] = spec.get("values", [])
             elif spec["kind"] == "numeric":
                 state_entry["min"] = spec.get("min")
                 state_entry["max"] = spec.get("max")
-
             template["states"].append(state_entry)
-
         for comp in obj.get("components", []):
-
             comp_name = norm(comp["name"])
             states = comp.get("states")
-
             if not states:
                 continue
-
             if states.get("kind") == "dynamic_receptor":
-
                 domain = self.get_receptor_domain(cat, type_name, obj_id, comp["name"])
-
                 template["states"].append({
                     "name": comp_name,
                     "kind": "enum",
                     "values": domain
                 })
-
             elif states.get("kind") == "enum":
                 template["states"].append({
                     "name": comp_name,
                     "kind": "enum",
                     "values": states.get("values", [])
                 })
-
             elif states.get("kind") == "numeric":
                 template["states"].append({
                     "name": comp_name,
@@ -1780,106 +1756,51 @@ class LabInventoryApp(tk.Tk):
                     "min": states.get("min"),
                     "max": states.get("max")
                 })
-
         # -------------------------------------------------
-        # 2️⃣ INTRINSIC + COMPONENT ACTIONS (WITH EFFECTS)
+        # 2️⃣ COMPONENT ACTIONS
         # -------------------------------------------------
         for comp in obj.get("components", []):
-
             comp_name = norm(comp["name"])
-
             for action in comp.get("actions", []):
-
-                action_name = f"{comp_name}.{norm(action)}"
-
-                effect = {}
-
-                # Basic semantics by component type
-                if comp.get("type") == "binary control":
-                    effect[comp_name] = "toggle"
-
-                elif comp.get("type") == "momentary control":
-                    effect = {"trigger": comp_name}
-
-                elif comp.get("type") == "selector control":
-                    effect[comp_name] = "selected_value"
-
-                elif comp.get("type") == "continuous control":
-                    effect[comp_name] = "updated_numeric_value"
-
-                elif comp.get("type") == "observable":
-                    effect = {}  # read-only
-
-                template["actions"].append({
-                    "name": action_name,
-                    "type": "component",
-                    "effect": effect
-                })
-
+                action_entry = {
+                    "name": f"{comp_name}.{norm(action)}",
+                    "type": "control"
+                }
+                comp_type = comp.get("type")
+                if comp_type == "binary control":
+                    action_entry["parameters"] = {"value": comp["states"]["values"]}
+                elif comp_type == "selector control":
+                    action_entry["parameters"] = {"value": comp["states"]["values"]}
+                elif comp_type == "continuous control":
+                    action_entry["parameters"] = {"value": ["numeric_value"]}
+                else:  # momentary control
+                    action_entry["parameters"] = {}
+                template["actions"].append(action_entry)
         # -------------------------------------------------
         # 3️⃣ INTERACTION ACTIONS
         # -------------------------------------------------
         for inter in interactions:
-
-            inter_type = inter.get("type")
-            src = inter["source"]
             tgt = inter["target"]
-
-            def matches(entity):
-                if entity["category"] != cat:
-                    return False
-                if entity["type"] != type_name:
-                    return False
-                if entity["id"] == "*":
-                    return True
-                return str(entity["id"]) == str(obj_id)
-
-            if not (matches(src) or matches(tgt)):
+            if tgt["category"] != cat:
                 continue
-
-            action_name = inter_type
-
-            effect = {}
-
-            if inter_type == "place":
-
-                # Only target object gets receptor update
-                if matches(tgt):
-                    receptor = norm(tgt.get("component"))
-                    effect[receptor] = "<source_object>"
-                    effect["external_update"] = (
-                        "<source_object>.location := " + receptor
-                    )
-
-            elif inter_type == "transfer":
-
-                if matches(src):
-                    effect["quantity"] = "quantity - delta"
-                    effect["external_update"] = (
-                        "<target_object>.quantity := + delta"
-                    )
-
-                elif matches(tgt):
-                    effect["quantity"] = "quantity + delta"
-                    effect["external_update"] = (
-                        "<source_object>.quantity := - delta"
-                    )
-
-            template["actions"].append({
-                "name": action_name,
+            if tgt["type"] != type_name:
+                continue
+            if tgt.get("id") not in (str(obj_id), "*"):
+                continue
+            src = inter["source"]
+            if src["id"] == "*":
+                obj_label = f"{src['category']}:{norm(src['type'])}"
+            else:
+                obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
+            action_entry = {
+                "name": inter["type"],
                 "type": "interaction",
-                "parameters": ["other_object"],
-                "effect": effect
-            })
-
-        # -------------------------------------------------
-        # Remove duplicates
-        # -------------------------------------------------
-        unique = {}
-        for a in template["actions"]:
-            unique[a["name"]] = a
-
-        template["actions"] = list(unique.values())
+                "parameters": {
+                    "object": obj_label,
+                    "target": norm(tgt["component"]) if tgt.get("component") else None
+                }
+            }
+            template["actions"].append(action_entry)
 
         return template
 

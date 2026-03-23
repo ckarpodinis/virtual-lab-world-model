@@ -24,6 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("input_file", help="Path to world model JSON file")
 parser.add_argument("--threshold", type=float, default=0.7,
                     help="Reward threshold above which an action is considered VALID (default: 0.7)")
+parser.add_argument("--template", help="Path to MDP template JSON (enables JSON rule export)")
 args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
@@ -281,3 +282,79 @@ if precedence_rules:
 else:
     print("\n  No precedence rules found with current threshold.")
 print("\n")
+
+# ── 7. Export rules to JSON (only when --template is provided) ────────────────
+if args.template:
+    import re
+
+    with open(args.template) as f:
+        tmpl = json.load(f)
+
+    obj_id       = tmpl["object"]                           # "instrument:electronic_scale[0]"
+    action_index = {a["name"]: a for a in tmpl["actions"]}
+
+    # derive "$scale_id" from "instrument:electronic_scale[0]"
+    m        = re.search(r":(.+?)\[", obj_id)
+    raw_type = m.group(1) if m else obj_id                  # "electronic_scale"
+    var_name = raw_type.split("_")[-1] + "_id"              # "scale_id"
+    # instrument id in dot notation for trigger: "instrument.electronic_scale[0]"
+    obj_dot  = obj_id.replace(":", ".")
+
+    def make_trigger(action_a):
+        tpl    = action_index.get(action_a, {})
+        params = tpl.get("parameters", {})
+        conds  = [{"path": "action", "equals": action_a}]
+        if tpl.get("type") == "interaction":
+            # e.g. place: object="tool:aluminum_foil" -> glob "tool.aluminum_foil.*"
+            obj_param = params.get("object", "").replace(":", ".")
+            conds.append({"path": "target.id", "matches": {"glob": obj_param + ".*"}})
+            conds.append({"path": "to.id", "equals": f"${var_name}"})
+            conds.append({"path": "to.id", "equals": obj_dot})
+        elif tpl.get("type") == "control":
+            conds.append({"path": "target.id", "equals": f"${var_name}"})
+        return {"match": {"all": conds}}
+
+    def make_requires(action_b, feature, value):
+        if action_b is None:
+            # no trusted producer — express as a state condition
+            return [{"state": feature, "value": str(value)}]
+        tpl = action_index.get(action_b, {})
+        if tpl.get("type") == "control":
+            # "power_button.set" -> property="power_button", action="set"
+            parts = action_b.rsplit(".", 1)
+            prop  = parts[0] if len(parts) == 2 else action_b
+            act   = parts[1] if len(parts) == 2 else action_b
+            return [{"action":   act,
+                     "target":   {"type": "instrument", "id": f"${var_name}"},
+                     "property": prop,
+                     "value":    str(value)}]
+        else:
+            return [{"action":   action_b,
+                     "target":   {"type": "instrument", "id": f"${var_name}"},
+                     "property": feature,
+                     "value":    str(value)}]
+
+    output_rules = []
+    seen_export  = set()
+    rule_id      = 1
+
+    for (action_b, feature, value, action_a, feat, forbidden) in sorted(
+            precedence_rules, key=lambda x: (x[3], x[1], str(x[0]))):
+        key = (action_b, feature, value, action_a)
+        if key in seen_export:
+            continue
+        seen_export.add(key)
+        if action_a not in action_index:
+            continue
+        output_rules.append({
+            "id":       rule_id,
+            "trigger":  make_trigger(action_a),
+            "requires": make_requires(action_b, feature, value)
+        })
+        rule_id += 1
+
+    out_path = args.input_file.replace(".json", "_rules.json")
+    with open(out_path, "w") as f:
+        json.dump(output_rules, f, indent=2)
+    print(f"\nRules exported to: {out_path}")
+    print(json.dumps(output_rules, indent=2))
