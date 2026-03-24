@@ -17,7 +17,7 @@ Usage:
 
 import json
 import argparse
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
@@ -25,10 +25,13 @@ parser.add_argument("input_file", help="Path to world model JSON file")
 parser.add_argument("--threshold", type=float, default=0.7,
                     help="Reward threshold above which an action is considered VALID (default: 0.7)")
 parser.add_argument("--template", help="Path to MDP template JSON (enables JSON rule export)")
+parser.add_argument("--epsilon", type=float, default=0.1,
+                    help="Ambiguity band below threshold (default: 0.1)")
 args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
-INVALID_THRESHOLD = 1 - VALID_THRESHOLD
+EPSILON           = args.epsilon
+INVALID_THRESHOLD = VALID_THRESHOLD - EPSILON
 
 # ── 1. Parse the world model JSON ─────────────────────────────────────────────
 def parse_world_model(path):
@@ -53,10 +56,10 @@ print(f"Parsed {len(entries)} (state, action) entries\n")
 def classify(reward, valid_thresh, invalid_thresh):
     if reward >= valid_thresh:
         return "VALID"
-    elif reward <= invalid_thresh:
-        return "INVALID"
-    else:
+    elif reward >= invalid_thresh:
         return "AMBIGUOUS"
+    else:
+        return "INVALID"
 
 for e in entries:
     e["label"] = classify(e["expected_reward"], VALID_THRESHOLD, INVALID_THRESHOLD)
@@ -67,7 +70,7 @@ for e in entries:
 
 # ── 3. Validity table ─────────────────────────────────────────────────────────
 print("=" * 70)
-print(f"VALIDITY TABLE  (threshold: valid >= {VALID_THRESHOLD}, invalid <= {INVALID_THRESHOLD:.2f})")
+print(f"VALIDITY TABLE  (VALID >= {VALID_THRESHOLD}, AMBIGUOUS >= {INVALID_THRESHOLD:.2f}, INVALID < {INVALID_THRESHOLD:.2f})")
 print("=" * 70)
 
 for action in sorted(by_action):
@@ -127,6 +130,73 @@ def extract_rules(entries_a):
 
     return rules
 
+def extract_probabilistic_preconditions(entries_a):
+    """
+    For each feature, compute how often each value appears among VALID entries.
+    confidence = count(value among VALID states) / number of VALID states
+
+    confidence == 1.0  -> logically NECESSARY
+    confidence < 1.0   -> probabilistic tendency
+    """
+    valid = [e for e in entries_a if e["label"] == "VALID"]
+
+    if not valid:
+        return {"note": "no valid entries"}
+
+    state_keys = sorted(entries_a[0]["state"].keys())
+    result = {}
+
+    for key in state_keys:
+        values = [e["state"][key] for e in valid]
+        counts = Counter(values)
+        total = len(valid)
+
+        result[key] = []
+        for val, count in sorted(counts.items(), key=lambda x: (-x[1], str(x[0]))):
+            confidence = count / total
+            result[key].append({
+                "value": val,
+                "count": count,
+                "total": total,
+                "confidence": confidence
+            })
+
+    return result
+
+def extract_probabilistic_preconditions_weighted(entries_a):
+    valid = [e for e in entries_a if e["label"] == "VALID"]
+
+    if not valid:
+        return {"note": "no valid entries"}
+
+    state_keys = sorted(entries_a[0]["state"].keys())
+    result = {}
+
+    for key in state_keys:
+        weighted_counts = {}
+        total_weight = 0
+
+        for e in valid:
+            val = e["state"][key]
+
+            weight = sum(t["count"] for t in e.get("transitions", []))
+            if weight == 0:
+                weight = 1
+
+            weighted_counts[val] = weighted_counts.get(val, 0) + weight
+            total_weight += weight
+
+        result[key] = []
+        for val, wcount in sorted(weighted_counts.items(), key=lambda x: (-x[1], str(x[0]))):
+            result[key].append({
+                "value": val,
+                "count": wcount,
+                "total": total_weight,
+                "confidence": wcount / total_weight
+            })
+
+    return result
+
 print("\n" + "=" * 70)
 print("EXTRACTED PRECONDITION RULES")
 print("=" * 70)
@@ -164,6 +234,8 @@ for action in sorted(by_action):
     invalid    = [e for e in entries_a if e["label"] == "INVALID"]
     state_keys = sorted(entries_a[0]["state"].keys())
     rules      = extract_rules(entries_a)
+    prob_unweighted = extract_probabilistic_preconditions(entries_a)
+    prob_weighted   = extract_probabilistic_preconditions_weighted(entries_a)
 
     print(f"\nAction: '{action}'")
 
@@ -196,90 +268,106 @@ for action in sorted(by_action):
         for e in ambig:
             state_str = ",  ".join(f"{k}={repr(e['state'][k])}" for k in state_keys)
             print(f"      reward={e['expected_reward']:.3f}  |  {state_str}")
+    
+    if "note" not in prob_unweighted:
+        print(f"  ~ PROBABILISTIC (state-based):")
+        for key, items in prob_unweighted.items():
+            vals = []
+            for item in items:
+                vals.append(
+                    f"{key}={repr(item['value'])} "
+                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
+                )
+            print("    " + " ; ".join(vals))
+    if "note" not in prob_weighted:
+        print(f"  ~ PROBABILISTIC (experience-weighted):")
+        for key, items in prob_weighted.items():
+            vals = []
+            for item in items:
+                vals.append(
+                    f"{key}={repr(item['value'])} "
+                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
+                )
+            print("    " + " ; ".join(vals))
 
 # ── 6. Precedence rules ───────────────────────────────────────────────────────
-# A precedence rule requires BOTH sides to be confirmed:
-#   - NECESSARY  feature=V  on action A → A requires this value to be valid
-#   - FORBIDDEN  feature=V' on action A → A is invalid without it
-# Together: something must have set feature from V' → V before A runs.
-# We look up which (action, transition) produces next_state[feature]=V
-# to name the predecessor precisely.
- 
+# Reuses SUMMARY OF RULES results directly:
+#   Step 1 — for each NECESSARY feature=V on action A,
+#             confirm that feature!=V always results in INVALID
+#             (i.e. the negation is always bad — it's a true precondition).
+#   Step 2 — find all actions (excluding self-loops) that produce
+#             feature=V via a transition with avg_reward >= threshold.
+#   Step 3 — group by action_a: collect all producer actions across all
+#             NECESSARY features, deduplicate, and emit one line per producer.
+#             Features with no known producer are reported separately.
+
 print("\n" + "=" * 70)
 print("FINAL RULES")
 print("=" * 70)
- 
-# Build lookup: (feature, value) -> [(action_that_produces_it, value_before), ...]
-producer_map = defaultdict(list)   # (feature, value) -> [(action, old_val, avg_reward)]
+
+# Build producer lookup: (feature, value) -> set of actions that produce it.
+# Only keep producers with avg_reward >= VALID_THRESHOLD (trusted transitions).
+producer_map = defaultdict(set)
 for e in entries:
     for t in e["transitions"]:
+        if t["avg_reward"] < VALID_THRESHOLD:
+            continue
         for feature, new_val in t["next_state"].items():
             old_val = e["state"].get(feature)
-            if old_val != new_val:   # only record actual state changes
-                producer_map[(feature, new_val)].append(
-                    (e["action"], old_val, t["avg_reward"])
-                )
- 
-# For each (feature, value), keep only producers whose avg_reward equals
-# the maximum observed AND is above the valid threshold.
-# If the best available producer is below threshold, no reliable producer
-# exists in the data — we leave the list empty rather than emit a noisy rule.
-for key in producer_map:
-    max_reward = max(r for _, _, r in producer_map[key])
-    if max_reward < VALID_THRESHOLD:
-        producer_map[key] = []   # no trustworthy producer found
-    else:
-        producer_map[key] = [
-            (action, old_val)
-            for action, old_val, r in producer_map[key]
-            if r == max_reward
-        ]
-        producer_map[key] = list(dict.fromkeys(producer_map[key]))  # deduplicate
- 
-precedence_rules = []
- 
+            if old_val != new_val:   # actual state change only
+                producer_map[(feature, new_val)].add(e["action"])
+
+any_rule = False
+
+# precedence_data collects structured info for section 7 JSON export:
+# list of (action_b_or_None, feature, nec_val, action_a)
+precedence_data = []
+
 for action_a in sorted(by_action):
     entries_a = by_action[action_a]
     rules_a   = extract_rules(entries_a)
- 
+
     if "note" in rules_a:
         continue
- 
+
+    # Accumulate all trusted producer actions across every NECESSARY feature,
+    # and separately track features with no known producer.
+    all_producers  = set()
+    no_producer_fv = []   # (feature, nec_val) pairs with no known producer
+
     for feature, val_map in rules_a.items():
         necessary_vals = [v for v, role in val_map.items() if role == "NECESSARY"]
-        forbidden_vals = [v for v, role in val_map.items() if role == "FORBIDDEN"]
- 
-        # Only emit a precedence rule when BOTH sides are present
-        if not necessary_vals or not forbidden_vals:
-            continue
- 
+
         for nec_val in necessary_vals:
-            producers = producer_map.get((feature, nec_val), [])
-            producers = [(a, v) for (a, v) in producers if a != action_a]  # exclude self-loops
+            # Step 1: confirm negation — every entry where feature != nec_val
+            #         must be INVALID (true precondition check)
+            negations = [e for e in entries_a if e["state"][feature] != nec_val]
+            if not negations:
+                continue
+            if any(e["label"] == "VALID" for e in negations):
+                continue   # negation is not always INVALID — not a true precondition
+
+            # Step 2: find all trusted producers, exclude self-loops
+            producers = sorted(producer_map.get((feature, nec_val), set()) - {action_a})
+
             if producers:
-                for (action_b, from_val) in producers:
-                    precedence_rules.append((action_b, feature, nec_val, action_a,
-                                             feature, forbidden_vals))
+                all_producers.update(producers)
+                for p in producers:
+                    precedence_data.append((p, feature, nec_val, action_a))
             else:
-                # No trusted producer found — emit rule without naming an action
-                precedence_rules.append((None, feature, nec_val, action_a,
-                                         feature, forbidden_vals))
- 
-if precedence_rules:
-    seen = set()
-    for (action_b, feature, value, action_a, feat, forbidden) in sorted(precedence_rules, key=lambda x: (x[3], x[1], str(x[0]))):
-        key = (action_b, feature, value, action_a)
-        if key in seen:
-            continue
-        seen.add(key)
-        if action_b:
-            label = f"'{action_b} {feature}={repr(value)}'"
-        else:
-            label = f"'{feature}={repr(value)}'"
-        print(f"\n  {label}  must precede  '{action_a}'")
-        #print(f"    because '{action_a}' NECESSARY  {feature} = {repr(value)}")
-        #print(f"    and     '{action_a}' FORBIDDEN  {feature} ∈ {forbidden}")
-else:
+                no_producer_fv.append((feature, nec_val))
+                precedence_data.append((None, feature, nec_val, action_a))
+
+    # Step 3: emit one rule per producer action, plus any no-producer entries
+    for producer in sorted(all_producers):
+        print(f"\n  '{producer}'  must precede  '{action_a}'")
+        any_rule = True
+
+    for feature, nec_val in no_producer_fv:
+        print(f"\n  '{feature}={repr(nec_val)}' (no known producer)  must precede  '{action_a}'")
+        any_rule = True
+
+if not any_rule:
     print("\n  No precedence rules found with current threshold.")
 print("\n")
 
@@ -293,6 +381,15 @@ if args.template:
     obj_id       = tmpl["object"]                           # "instrument:electronic_scale[0]"
     action_index = {a["name"]: a for a in tmpl["actions"]}
 
+    def lookup_action(action_name):
+        """Match world-model action names (may include params) to template entries.
+        e.g. 'place(object=tool:aluminum_foil, target=weighing_platform)' -> 'place'
+        """
+        if action_name in action_index:
+            return action_index[action_name]
+        base = action_name.split("(")[0]   # strip parameters
+        return action_index.get(base, {})
+
     # derive "$scale_id" from "instrument:electronic_scale[0]"
     m        = re.search(r":(.+?)\[", obj_id)
     raw_type = m.group(1) if m else obj_id                  # "electronic_scale"
@@ -301,7 +398,7 @@ if args.template:
     obj_dot  = obj_id.replace(":", ".")
 
     def make_trigger(action_a):
-        tpl    = action_index.get(action_a, {})
+        tpl    = lookup_action(action_a)
         params = tpl.get("parameters", {})
         conds  = [{"path": "action", "equals": action_a}]
         if tpl.get("type") == "interaction":
@@ -318,10 +415,11 @@ if args.template:
         if action_b is None:
             # no trusted producer — express as a state condition
             return [{"state": feature, "value": str(value)}]
-        tpl = action_index.get(action_b, {})
+        tpl = lookup_action(action_b)
         if tpl.get("type") == "control":
-            # "power_button.set" -> property="power_button", action="set"
-            parts = action_b.rsplit(".", 1)
+            # "power_button.set(value=on)" -> base "power_button.set" -> property="power_button", action="set"
+            base_b = action_b.split("(")[0]
+            parts = base_b.rsplit(".", 1)
             prop  = parts[0] if len(parts) == 2 else action_b
             act   = parts[1] if len(parts) == 2 else action_b
             return [{"action":   act,
@@ -338,13 +436,15 @@ if args.template:
     seen_export  = set()
     rule_id      = 1
 
-    for (action_b, feature, value, action_a, feat, forbidden) in sorted(
-            precedence_rules, key=lambda x: (x[3], x[1], str(x[0]))):
-        key = (action_b, feature, value, action_a)
+    for (action_b, feature, value, action_a) in sorted(
+            precedence_data, key=lambda x: (x[3], x[1], str(x[0]))):
+        # deduplicate on (action_b, action_a) — same producer+trigger pair
+        # regardless of which feature caused the rule
+        key = (action_b, action_a)
         if key in seen_export:
             continue
         seen_export.add(key)
-        if action_a not in action_index:
+        if not lookup_action(action_a):
             continue
         output_rules.append({
             "id":       rule_id,
