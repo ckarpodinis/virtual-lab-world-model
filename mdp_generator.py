@@ -90,7 +90,8 @@ Create a transition consisting of:
 
 state must be a valid assignment of all state variables.
 
-action must be one of the actions defined in the template.
+action must be one of the actions defined in the template,
+with all required parameters instantiated using valid values.
 If the action has parameters, instantiate them with plausible values.
 
 next_state should represent the state after the action.
@@ -109,6 +110,8 @@ Assign the reward based on the transition type:
 reward = 1 for VALID transitions
 reward = 0 for INVALID transitions
 
+An action is considered invalid if it does not include all required parameters.
+
 Imperfect reasoning is allowed.
 Mistakes should resemble realistic incorrect usage rather than random noise.
 
@@ -117,6 +120,27 @@ DATASET DIVERSITY
 Generate diverse states and actions.
 Avoid repeating the same state combinations.
 Explore different combinations of state variables.
+
+ACTION FORMAT
+-------------
+Actions must include all their parameters explicitly.
+
+Use the following canonical format:
+
+action_name(parameter1=value1, parameter2=value2, ...)
+
+The parameter names must match those defined in the template.
+
+The parameter values must be valid values according to the template.
+
+If an action has no parameters, use empty parentheses.
+
+All actions must strictly follow this format.
+Do not omit parameters.
+Do not change parameter names.
+Do not introduce new parameters.
+
+All actions in the dataset must follow exactly the same formatting convention.
 
 OUTPUT FORMAT
 -------------
