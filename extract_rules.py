@@ -27,6 +27,8 @@ parser.add_argument("--threshold", type=float, default=0.7,
 parser.add_argument("--template", help="Path to MDP template JSON (enables JSON rule export)")
 parser.add_argument("--epsilon", type=float, default=0.1,
                     help="Ambiguity band below threshold (default: 0.1)")
+parser.add_argument("--print-json", action="store_true",
+                    help="Export rules to JSON file")
 args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
@@ -390,25 +392,37 @@ if args.template:
         base = action_name.split("(")[0]   # strip parameters
         return action_index.get(base, {})
 
-    # derive "$scale_id" from "instrument:electronic_scale[0]"
-    m        = re.search(r":(.+?)\[", obj_id)
-    raw_type = m.group(1) if m else obj_id                  # "electronic_scale"
-    var_name = raw_type.split("_")[-1] + "_id"              # "scale_id"
     # instrument id in dot notation for trigger: "instrument.electronic_scale[0]"
     obj_dot  = obj_id.replace(":", ".")
 
     def make_trigger(action_a):
         tpl    = lookup_action(action_a)
         params = tpl.get("parameters", {})
-        conds  = [{"path": "action", "equals": action_a}]
+        conds  = [{"path": "action", "equals": action_a.split("(")[0]}]
         if tpl.get("type") == "interaction":
-            # e.g. place: object="tool:aluminum_foil" -> glob "tool.aluminum_foil.*"
-            obj_param = params.get("object", "").replace(":", ".")
-            conds.append({"path": "target.id", "matches": {"glob": obj_param + ".*"}})
-            conds.append({"path": "to.id", "equals": f"${var_name}"})
-            conds.append({"path": "to.id", "equals": obj_dot})
+            obj_param = params.get("object", "")
+            if obj_param:
+                obj_param = obj_param.replace(":", ".")
+                if "[" in obj_param:
+                    conds.append({"path": "target.id", "equals": obj_param})
+                else:
+                    conds.append({"path": "target.id", "matches": {"glob": obj_param + ".*"}})
+            target_param = params.get("target", "")
+            if target_param:
+                conds.append({"path": "to.id", "equals": obj_dot + "." + target_param})
+            else:
+                conds.append({"path": "to.id", "equals": obj_dot})
         elif tpl.get("type") == "control":
-            conds.append({"path": "target.id", "equals": f"${var_name}"})
+            base = action_a.split("(")[0]
+            parts = base.rsplit(".", 1)
+
+            if len(parts) == 2:
+                prop, act = parts
+                conds[0] = {"path": "action", "equals": act}  # replace action
+                conds.append({"path": "target.id", "equals": obj_dot + "." + prop})
+            else:
+                conds.append({"path": "target.id", "equals": obj_dot})
+
         return {"match": {"all": conds}}
 
     def make_requires(action_b, feature, value):
@@ -420,17 +434,29 @@ if args.template:
             # "power_button.set(value=on)" -> base "power_button.set" -> property="power_button", action="set"
             base_b = action_b.split("(")[0]
             parts = base_b.rsplit(".", 1)
-            prop  = parts[0] if len(parts) == 2 else action_b
-            act   = parts[1] if len(parts) == 2 else action_b
-            return [{"action":   act,
-                     "target":   {"type": "instrument", "id": f"${var_name}"},
-                     "property": prop,
-                     "value":    str(value)}]
+
+            if len(parts) == 2:
+                prop, act = parts
+                target_id = obj_dot + "." + prop
+            else:
+                act = action_b
+                target_id = obj_dot
+
+            return [{
+                "action": act,
+                "target": {
+                    "id": target_id
+                },
+                "value": str(value)
+            }]
         else:
-            return [{"action":   action_b,
-                     "target":   {"type": "instrument", "id": f"${var_name}"},
-                     "property": feature,
-                     "value":    str(value)}]
+            return [{
+                "action": action_b,
+                "target": {
+                    "id": obj_dot + "." + feature
+                },
+                "value": str(value)
+            }]
 
     output_rules = []
     seen_export  = set()
@@ -457,4 +483,82 @@ if args.template:
     with open(out_path, "w") as f:
         json.dump(output_rules, f, indent=2)
     print(f"\nRules exported to: {out_path}")
-    print(json.dumps(output_rules, indent=2))
+    if args.print_json:
+        print(json.dumps(output_rules, indent=2))
+
+# ── 8. Graphical visualization ────────────────────────────────────────────────
+if 'output_rules' in locals():
+    try:
+        from graphviz import Digraph
+
+        dot = Digraph(comment="Rule Graph")
+        dot.attr(rankdir="LR")
+
+        # ── Extract trigger (action + target) ─────────────────────────────────
+        def extract_trigger(trigger):
+            action = None
+            target = None
+
+            for p in trigger["match"]["all"]:
+                if p["path"] == "action":
+                    action = p["equals"]
+                elif p["path"] == "target.id":
+                    target = p.get("equals") or p.get("matches", {}).get("glob")
+
+            return action, target
+
+        # ── Node helpers (FULL identity = action + target + value) ────────────
+        def node_id(action, target, value):
+            return f"{action}|{target}|{value}"
+
+        def node_label(action, target, value):
+            return f"{action}\n{target}\n= {value}"
+
+        # ── Build graph ───────────────────────────────────────────────────────
+        for rule in output_rules:
+            action, target = extract_trigger(rule["trigger"])
+
+            # collect all values for this action-target pair
+            values = set()
+            for r in output_rules:
+                a2, t2 = extract_trigger(r["trigger"])
+                if a2 == action and t2 == target:
+                    for req2 in r["requires"]:
+                        if "value" in req2:
+                            values.add(req2["value"])
+
+            for req in rule["requires"]:
+                if "action" not in req:
+                    continue
+
+                r_action = req["action"]
+                r_target = req.get("target", {}).get("id", "")
+                r_value  = req.get("value", "")
+
+                r_id = node_id(r_action, r_target, r_value)
+                dot.node(r_id, label=node_label(r_action, r_target, r_value))
+
+                # connect to OTHER values (THIS is the fix)
+                if len(values) > 1:
+                    # multi-valued → connect to other values
+                    for v in values:
+                        if v == r_value:
+                            continue
+
+                        t_id = node_id(action, target, v)
+                        dot.node(t_id, label=node_label(action, target, v))
+                        dot.edge(r_id, t_id)
+                else:
+                    # single-valued → connect directly to trigger node
+                    t_id = node_id(action, target, r_value)
+                    dot.node(t_id, label=node_label(action, target, r_value))
+                    dot.edge(r_id, t_id)
+        
+        # ── Save graph using JSON filename ────────────────────────────────────
+        graph_path = out_path.replace("_rules.json", "_rules_graph")
+        dot.render(graph_path, format="png", cleanup=True)
+
+        print(f"Graph saved to: {graph_path}.png")
+
+    except ImportError:
+        print("Graphviz not installed. Run: pip install graphviz")
