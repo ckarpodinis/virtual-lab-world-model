@@ -1709,98 +1709,312 @@ class LabInventoryApp(tk.Tk):
         self.open_item_editor_clone(cat, type_name, cloned_item)
 
     def generate_object_mdp_template(self, cat, type_name, obj_id):
+
+        global inventory, interactions
+
         def norm(x):
-            return x.replace(" ", "_")
-        obj = inventory[cat][type_name][int(obj_id)]
+            return x.replace(" ", "_").lower() if isinstance(x, str) else x
+
+        obj = inventory[cat][type_name][obj_id]
+
         template = {
             "object": f"{cat}:{norm(type_name)}[{obj_id}]",
             "states": [],
             "actions": []
         }
+
         # -------------------------------------------------
-        # 1️⃣ STATES
+        # 1️⃣ STATES (components + object states)
         # -------------------------------------------------
-        for state_name, spec in obj.get("states", {}).items():
-            state_entry = {
-                "name": norm(state_name),
-                "kind": spec["kind"]
-            }
-            if spec["kind"] == "enum":
-                state_entry["values"] = spec.get("values", [])
-            elif spec["kind"] == "numeric":
-                state_entry["min"] = spec.get("min")
-                state_entry["max"] = spec.get("max")
-            template["states"].append(state_entry)
         for comp in obj.get("components", []):
-            comp_name = norm(comp["name"])
             states = comp.get("states")
+
             if not states:
                 continue
-            if states.get("kind") == "dynamic_receptor":
-                domain = self.get_receptor_domain(cat, type_name, obj_id, comp["name"])
+
+            # 🔥 HANDLE dynamic_receptor
+            if states["kind"] == "dynamic_receptor":
+                values = ["empty"]
+
+                # find objects that can be placed here
+                for inter in interactions:
+                    if inter["type"] != "place":
+                        continue
+
+                    tgt = inter["target"]
+
+                    if (
+                        tgt["category"] == cat and
+                        tgt["type"] == type_name and
+                        tgt.get("component") == comp["name"]
+                    ):
+                        src = inter["source"]
+                        obj_label = f"{src['category']}:{norm(src['type'])}"
+                        values.append(obj_label)
+
                 template["states"].append({
-                    "name": comp_name,
+                    "name": norm(comp["name"]),
                     "kind": "enum",
-                    "values": domain
+                    "values": sorted(set(values))
                 })
-            elif states.get("kind") == "enum":
+
+            # 🔹 NORMAL STATES
+            else:
                 template["states"].append({
-                    "name": comp_name,
-                    "kind": "enum",
-                    "values": states.get("values", [])
+                    "name": norm(comp["name"]),
+                    "kind": states["kind"],
+                    **{k: v for k, v in states.items() if k != "kind"}
                 })
-            elif states.get("kind") == "numeric":
-                template["states"].append({
-                    "name": comp_name,
-                    "kind": "numeric",
-                    "min": states.get("min"),
-                    "max": states.get("max")
-                })
+
+        for state_name, state_info in obj.get("states", {}).items():
+            template["states"].append({
+                "name": norm(state_name),
+                "kind": state_info["kind"],
+                **{k: v for k, v in state_info.items() if k != "kind"}
+            })
+
         # -------------------------------------------------
-        # 2️⃣ COMPONENT ACTIONS
+        # 2️⃣ CONTROL ACTIONS
         # -------------------------------------------------
         for comp in obj.get("components", []):
-            comp_name = norm(comp["name"])
             for action in comp.get("actions", []):
                 action_entry = {
-                    "name": f"{comp_name}.{norm(action)}",
-                    "type": "control"
+                    "name": f"{norm(comp['name'])}.{action}",
+                    "type": "control",
+                    "parameters": {}
                 }
-                comp_type = comp.get("type")
-                if comp_type == "binary control":
-                    action_entry["parameters"] = {"value": comp["states"]["values"]}
-                elif comp_type == "selector control":
-                    action_entry["parameters"] = {"value": comp["states"]["values"]}
-                elif comp_type == "continuous control":
-                    action_entry["parameters"] = {"value": ["numeric_value"]}
-                else:  # momentary control
-                    action_entry["parameters"] = {}
+
+                if comp.get("states") and comp["states"]["kind"] == "enum":
+                    action_entry["parameters"]["value"] = comp["states"]["values"]
+
                 template["actions"].append(action_entry)
+
         # -------------------------------------------------
         # 3️⃣ INTERACTION ACTIONS
         # -------------------------------------------------
         for inter in interactions:
-            tgt = inter["target"]
-            if tgt["category"] != cat:
-                continue
-            if tgt["type"] != type_name:
-                continue
-            if tgt.get("id") not in (str(obj_id), "*"):
-                continue
+
             src = inter["source"]
-            if src["id"] == "*":
-                obj_label = f"{src['category']}:{norm(src['type'])}"
-            else:
-                obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
-            action_entry = {
-                "name": inter["type"],
-                "type": "interaction",
-                "parameters": {
-                    "object": obj_label,
-                    "target": norm(tgt["component"]) if tgt.get("component") else None
+            tgt = inter["target"]
+
+            is_source = (
+                src["category"] == cat and
+                src["type"] == type_name and
+                src.get("id") in (str(obj_id), "*")
+            )
+
+            is_target = (
+                tgt["category"] == cat and
+                tgt["type"] == type_name and
+                tgt.get("id") in (str(obj_id), "*")
+            )
+
+            if not (is_source or is_target):
+                continue
+
+            # -------------------------------------------------
+            # 🔹 PLACE (object-based)
+            # -------------------------------------------------
+            if inter["type"] == "place":
+                if not is_target:
+                    continue
+
+                if src["id"] == "*":
+                    obj_label = f"{src['category']}:{norm(src['type'])}"
+                else:
+                    obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
+
+                action_entry = {
+                    "name": "place",
+                    "type": "interaction",
+                    "parameters": {
+                        "object": obj_label,
+                        "target": norm(tgt["component"]) if tgt.get("component") else None
+                    }
                 }
-            }
-            template["actions"].append(action_entry)
+
+                if action_entry not in template["actions"]:
+                    template["actions"].append(action_entry)
+
+                continue
+
+            # -------------------------------------------------
+            # 🔹 TRANSFER (material-based)
+            # -------------------------------------------------
+            if inter["type"] == "transfer":
+
+                # ---------------------------------------------
+                # CASE A: current object is TARGET
+                # ---------------------------------------------
+                if is_target:
+                    material_labels = []
+
+                    # source is container
+                    if src["category"] == "container":
+                        if src["id"] == "*":
+                            source_obj = inventory[src["category"]][src["type"]][0]
+                        else:
+                            source_obj = inventory[src["category"]][src["type"]][int(src["id"])]
+
+                        contains = source_obj.get("contains")
+                        if contains and contains.get("entity_type") == "material":
+                            material_labels.append(
+                                f"material:{norm(contains['type_name'])}"
+                            )
+
+                    # source is tool/instrument
+                    elif src["category"] in ["tool", "instrument"]:
+                        for inter2 in interactions:
+                            if inter2["type"] != "transfer":
+                                continue
+
+                            if (
+                                inter2["target"]["category"] == src["category"] and
+                                inter2["target"]["type"] == src["type"]
+                            ):
+                                src2 = inter2["source"]
+
+                                if src2["category"] == "container":
+                                    if src2["id"] == "*":
+                                        source_obj = inventory[src2["category"]][src2["type"]][0]
+                                    else:
+                                        source_obj = inventory[src2["category"]][src2["type"]][int(src2["id"])]
+
+                                    contains = source_obj.get("contains")
+                                    if contains and contains.get("entity_type") == "material":
+                                        material_labels.append(
+                                            f"{src['category']}:{norm(src['type'])}:{norm(contains['type_name'])}"
+                                        )
+
+                    for mat in set(material_labels):
+                        params = {
+                            "material": mat,
+                            "target_object": f"{cat}:{norm(type_name)}[{obj_id}]"
+                        }
+
+                        action_entry = {
+                            "name": "transfer",
+                            "type": "interaction",
+                            "parameters": params
+                        }
+
+                        if action_entry not in template["actions"]:
+                            template["actions"].append(action_entry)
+
+                # ---------------------------------------------
+                # CASE B: current object is SOURCE
+                # ---------------------------------------------
+                else:
+                    if tgt["id"] == "*":
+                        other_label = f"{tgt['category']}:{norm(tgt['type'])}"
+                    else:
+                        other_label = f"{tgt['category']}:{norm(tgt['type'])}[{tgt['id']}]"
+
+                    material_labels = []
+
+                    # object is container
+                    contains = obj.get("contains")
+                    if contains and contains.get("entity_type") == "material":
+                        base_material = f"material:{norm(contains['type_name'])}"
+                        material_labels.append(base_material)
+
+                    # object is tool/instrument
+                    for inter2 in interactions:
+                        if inter2["type"] != "transfer":
+                            continue
+
+                        if (
+                            inter2["target"]["category"] == cat and
+                            inter2["target"]["type"] == type_name
+                        ):
+                            src2 = inter2["source"]
+
+                            if src2["category"] == "container":
+                                if src2["id"] == "*":
+                                    source_obj = inventory[src2["category"]][src2["type"]][0]
+                                else:
+                                    source_obj = inventory[src2["category"]][src2["type"]][int(src2["id"])]
+
+                                contains2 = source_obj.get("contains")
+                                if contains2 and contains2.get("entity_type") == "material":
+                                    material_labels.append(
+                                        f"{cat}:{norm(type_name)}:{norm(contains2['type_name'])}"
+                                    )
+
+                    # direct actions for the current interaction
+                    for mat in set(material_labels):
+                        params = {
+                            "material": mat,
+                            "target_object": other_label
+                        }
+
+                        action_entry = {
+                            "name": "transfer",
+                            "type": "interaction",
+                            "parameters": params
+                        }
+
+                        if action_entry not in template["actions"]:
+                            template["actions"].append(action_entry)
+
+                    # -------------------------------------------------
+                    # 1-hop mediated downstream transfers from containers
+                    # container -> mediator  and  mediator -> final_target
+                    # -------------------------------------------------
+                    contains = obj.get("contains")
+                    if contains and contains.get("entity_type") == "material":
+                        material_name = norm(contains["type_name"])
+
+                        for inter_mid in interactions:
+                            if inter_mid["type"] != "transfer":
+                                continue
+
+                            mid_src = inter_mid["source"]
+                            mid_tgt = inter_mid["target"]
+
+                            # current container -> mediator
+                            if not (
+                                mid_src["category"] == cat and
+                                mid_src["type"] == type_name and
+                                mid_src.get("id") in (str(obj_id), "*")
+                            ):
+                                continue
+
+                            mediator_cat = mid_tgt["category"]
+                            mediator_type = mid_tgt["type"]
+
+                            mediated_material = f"{mediator_cat}:{norm(mediator_type)}:{material_name}"
+
+                            for inter_next in interactions:
+                                if inter_next["type"] != "transfer":
+                                    continue
+
+                                next_src = inter_next["source"]
+                                next_tgt = inter_next["target"]
+
+                                # mediator -> final target
+                                if not (
+                                    next_src["category"] == mediator_cat and
+                                    next_src["type"] == mediator_type
+                                ):
+                                    continue
+
+                                if next_tgt["id"] == "*":
+                                    final_target_label = f"{next_tgt['category']}:{norm(next_tgt['type'])}"
+                                else:
+                                    final_target_label = f"{next_tgt['category']}:{norm(next_tgt['type'])}[{next_tgt['id']}]"
+
+                                action_entry = {
+                                    "name": "transfer",
+                                    "type": "interaction",
+                                    "parameters": {
+                                        "material": mediated_material,
+                                        "target_object": final_target_label
+                                    }
+                                }
+
+                                if action_entry not in template["actions"]:
+                                    template["actions"].append(action_entry)
 
         return template
 
@@ -1816,7 +2030,7 @@ class LabInventoryApp(tk.Tk):
             messagebox.showerror("Error", "Select an object (not component).")
             return
 
-        cat, type_name, obj_id = values[1], values[2], values[3]
+        cat, type_name, obj_id = values[1], values[2], int(values[3])
 
         template = self.generate_object_mdp_template(cat, type_name, obj_id)
 
