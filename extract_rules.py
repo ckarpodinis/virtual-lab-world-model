@@ -509,7 +509,8 @@ if 'output_rules' in locals():
 
         # ── Node helpers (FULL identity = action + target + value) ────────────
         def node_id(action, target, value):
-            return f"{action}|{target}|{value}"
+            raw = f"{action}|{target}|{value}"
+            return re.sub(r'[^a-zA-Z0-9_]', '_', raw)
 
         def node_label(action, target, value):
             return f"{action}\n{target}\n= {value}"
