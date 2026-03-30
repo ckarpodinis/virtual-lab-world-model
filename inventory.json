@@ -1,0 +1,492 @@
+{
+  "objects": {
+    "instrument": {
+      "electronic scale": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "power button",
+              "type": "binary control",
+              "actions": [
+                "set"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "off",
+                  "on"
+                ]
+              }
+            },
+            {
+              "name": "display",
+              "type": "observable",
+              "actions": [],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "off",
+                  "zero",
+                  "nonzero"
+                ]
+              }
+            },
+            {
+              "name": "weighing platform",
+              "type": "receptor",
+              "actions": [],
+              "states": {
+                "kind": "dynamic_receptor"
+              }
+            },
+            {
+              "name": "tare button",
+              "type": "momentary control",
+              "actions": [
+                "press"
+              ],
+              "states": null
+            }
+          ],
+          "object_actions": [],
+          "states": {}
+        }
+      ],
+      "magnetic stirrer": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "power button",
+              "type": "binary control",
+              "actions": [
+                "set"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "off",
+                  "on"
+                ]
+              }
+            },
+            {
+              "name": "rpm button",
+              "type": "selector control",
+              "actions": [
+                "select"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "0",
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5"
+                ]
+              }
+            },
+            {
+              "name": "stirring platform",
+              "type": "receptor",
+              "actions": [],
+              "states": {
+                "kind": "dynamic_receptor"
+              }
+            }
+          ],
+          "object_actions": [],
+          "states": {}
+        }
+      ],
+      "electronic pipette": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "draw trigger button",
+              "type": "momentary control",
+              "actions": [
+                "press"
+              ],
+              "states": null
+            },
+            {
+              "name": "pour trigger button",
+              "type": "momentary control",
+              "actions": [
+                "press"
+              ],
+              "states": null
+            },
+            {
+              "name": "power button",
+              "type": "binary control",
+              "actions": [
+                "set"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "off",
+                  "on"
+                ]
+              }
+            }
+          ],
+          "object_actions": [],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            },
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ]
+    },
+    "container": {
+      "ddh2o bottle": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "cap",
+              "type": "binary control",
+              "actions": [
+                "open",
+                "close"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "closed",
+                  "opened"
+                ]
+              }
+            }
+          ],
+          "object_actions": [],
+          "contains": {
+            "entity_type": "material",
+            "type_name": "double-distiller water"
+          },
+          "states": {
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ],
+      "cuso4 bottle": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "cap",
+              "type": "binary control",
+              "actions": [
+                "open",
+                "close"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "closed",
+                  "opened"
+                ]
+              }
+            }
+          ],
+          "object_actions": [],
+          "contains": {
+            "entity_type": "material",
+            "type_name": "copper sulfate pentahydrate (cuso4)"
+          },
+          "states": {
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ],
+      "nahco3 bottle": [
+        {
+          "id": 0,
+          "components": [
+            {
+              "name": "cap",
+              "type": "binary control",
+              "actions": [
+                "open",
+                "close"
+              ],
+              "states": {
+                "kind": "enum",
+                "values": [
+                  "closed",
+                  "opened"
+                ]
+              }
+            }
+          ],
+          "object_actions": [],
+          "states": {
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          },
+          "contains": {
+            "entity_type": "material",
+            "type_name": "sodium bicarbonate (nahco3)"
+          }
+        }
+      ]
+    },
+    "tool": {
+      "spoon": [
+        {
+          "id": 0,
+          "components": [],
+          "object_actions": [],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            },
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ],
+      "aluminum foil": [
+        {
+          "id": 0,
+          "components": [],
+          "object_actions": [
+            "place",
+            "move"
+          ],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            },
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ],
+      "erlenmeyer flask": [
+        {
+          "id": 0,
+          "components": [],
+          "object_actions": [],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            },
+            "quantity": {
+              "kind": "numeric",
+              "min": 0,
+              "max": 100
+            }
+          }
+        }
+      ],
+      "magnetic stir bar": [
+        {
+          "id": 0,
+          "components": [],
+          "object_actions": [],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            }
+          }
+        }
+      ],
+      "magnetic stick": [
+        {
+          "id": 0,
+          "components": [],
+          "object_actions": [],
+          "states": {
+            "location": {
+              "kind": "enum",
+              "domain": "locations"
+            }
+          }
+        }
+      ]
+    },
+    "material": {}
+  },
+  "interactions": [
+    {
+      "id": 0,
+      "type": "transfer",
+      "source": {
+        "category": "container",
+        "type": "cuso4 bottle",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "spoon",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 1,
+      "type": "transfer",
+      "source": {
+        "category": "tool",
+        "type": "spoon",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "aluminum foil",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 2,
+      "type": "place",
+      "source": {
+        "category": "tool",
+        "type": "aluminum foil",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "instrument",
+        "type": "electronic scale",
+        "id": "0",
+        "component": "weighing platform"
+      }
+    },
+    {
+      "id": 3,
+      "type": "place",
+      "source": {
+        "category": "tool",
+        "type": "erlenmeyer flask",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "instrument",
+        "type": "magnetic stirrer",
+        "id": "0",
+        "component": "stirring platform"
+      }
+    },
+    {
+      "id": 4,
+      "type": "place",
+      "source": {
+        "category": "tool",
+        "type": "magnetic stick",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "erlenmeyer flask",
+        "id": "*",
+        "component": ""
+      }
+    },
+    {
+      "id": 5,
+      "type": "transfer",
+      "source": {
+        "category": "container",
+        "type": "nahco3 bottle",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "spoon",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 6,
+      "type": "transfer",
+      "source": {
+        "category": "container",
+        "type": "ddh2o bottle",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "instrument",
+        "type": "electronic pipette",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 7,
+      "type": "transfer",
+      "source": {
+        "category": "instrument",
+        "type": "electronic pipette",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "erlenmeyer flask",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 8,
+      "type": "transfer",
+      "source": {
+        "category": "container",
+        "type": "ddh2o bottle",
+        "id": "*",
+        "component": null
+      },
+      "target": {
+        "category": "tool",
+        "type": "erlenmeyer flask",
+        "id": "*",
+        "component": null
+      }
+    }
+  ]
+}
