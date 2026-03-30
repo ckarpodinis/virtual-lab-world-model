@@ -396,15 +396,20 @@ class LabInventoryApp(tk.Tk):
                     else:
                         item["states"].pop("location", None)
 
-                    # Contains material → quantity state
+                    # Contains material → quantity + material states
                     if container_var.get():
                         item["states"]["quantity"] = {
                             "kind": "numeric",
                             "min": 0,
                             "max": 100
                         }
+                        item["states"]["material"] = {
+                            "kind": "enum",
+                            "domain": "materials"
+                        }
                     else:
                         item["states"].pop("quantity", None)
+                        item["states"].pop("material", None)
                 
                 if category == "container":
                     if material_name:
@@ -1736,7 +1741,6 @@ class LabInventoryApp(tk.Tk):
             if states["kind"] == "dynamic_receptor":
                 values = ["empty"]
 
-                # find objects that can be placed here
                 for inter in interactions:
                     if inter["type"] != "place":
                         continue
@@ -1773,6 +1777,270 @@ class LabInventoryApp(tk.Tk):
                 **{k: v for k, v in state_info.items() if k != "kind"}
             })
 
+        # -------------------------------------------------
+        # 1b️⃣ STATES OF INTERACTED OBJECTS
+        # -------------------------------------------------
+        seen_interacted = set()
+        
+        def add_interacted_states(other_cat, other_type, other_id):
+
+            def get_material_state(instance, label):
+                mat_state_info = instance.get("states", {}).get("material")
+                if not mat_state_info or mat_state_info.get("domain") != "materials":
+                    return None
+
+                possible_materials = set()
+
+                def trace_material_from_source(src):
+                    if src["category"] == "container":
+                        src_id = int(src["id"]) if src["id"] != "*" else 0
+                        src_obj = inventory[src["category"]][src["type"]][src_id]
+                        contains = src_obj.get("contains")
+                        if contains and contains.get("entity_type") == "material":
+                            possible_materials.add(f"material:{norm(contains['type_name'])}")
+                    elif src["category"] in ("tool", "instrument"):
+                        for inter3 in interactions:
+                            if inter3["type"] != "transfer":
+                                continue
+                            if (inter3["target"]["category"] == src["category"] and
+                                    inter3["target"]["type"] == src["type"]):
+                                src3 = inter3["source"]
+                                if src3["category"] == "container":
+                                    src3_id = int(src3["id"]) if src3["id"] != "*" else 0
+                                    src3_obj = inventory[src3["category"]][src3["type"]][src3_id]
+                                    contains = src3_obj.get("contains")
+                                    if contains and contains.get("entity_type") == "material":
+                                        possible_materials.add(f"material:{norm(contains['type_name'])}")
+
+                for inter2 in interactions:
+                    if inter2["type"] != "transfer":
+                        continue
+
+                    src2 = inter2["source"]
+                    tgt2 = inter2["target"]
+
+                    current_involved = (
+                        (src2["category"] == cat and src2["type"] == type_name and
+                         src2.get("id") in (str(obj_id), "*")) or
+                        (tgt2["category"] == cat and tgt2["type"] == type_name and
+                         tgt2.get("id") in (str(obj_id), "*"))
+                    )
+                    if not current_involved:
+                        continue
+
+                    # CASE A: interacted object directly involved in this interaction
+                    other_involved = (
+                        (src2["category"] == other_cat and src2["type"] == other_type) or
+                        (tgt2["category"] == other_cat and tgt2["type"] == other_type)
+                    )
+                    if other_involved:
+                        trace_material_from_source(src2)
+                        continue
+
+                    # CASE B: 1-hop mediated — current → mediator → interacted object
+                    # inter2 is current → mediator, look for mediator → interacted object
+                    mediator_cat = tgt2["category"]
+                    mediator_type = tgt2["type"]
+
+                    for inter3 in interactions:
+                        if inter3["type"] != "transfer":
+                            continue
+                        if not (inter3["source"]["category"] == mediator_cat and
+                                inter3["source"]["type"] == mediator_type):
+                            continue
+                        if not (inter3["target"]["category"] == other_cat and
+                                inter3["target"]["type"] == other_type):
+                            continue
+                        # mediator → interacted object found — trace material from current object
+                        trace_material_from_source(src2)
+
+                if not possible_materials:
+                    return None
+
+                return {
+                    "name": f"{label}.material",
+                    "kind": "enum",
+                    "values": ["material:none"] + sorted(possible_materials)
+                }
+
+            def get_location_domain(other_cat, other_type, other_id):
+                loc_state_info = inventory[other_cat].get(other_type, [{}])[0].get("states", {}).get("location")
+                if not loc_state_info or loc_state_info.get("domain") != "locations":
+                    return None
+
+                values = []
+                for inter2 in interactions:
+                    if inter2["type"] != "place":
+                        continue
+
+                    src2 = inter2["source"]
+                    tgt2 = inter2["target"]
+
+                    # interacted object must be the source of this place interaction
+                    if src2["category"] != other_cat or src2["type"] != other_type:
+                        continue
+
+                    # current object must be the target
+                    if not (tgt2["category"] == cat and tgt2["type"] == type_name and
+                            tgt2.get("id") in (str(obj_id), "*")):
+                        continue
+
+                    receptor = norm(tgt2["component"]) if tgt2.get("component") else None
+                    loc = f"{cat}:{norm(type_name)}[{obj_id}]"
+                    if receptor:
+                        loc += f":{receptor}"
+                    values.append(loc)
+
+                return ["bench"] + sorted(set(values)) if values else None
+
+            if other_id == "*":
+                instances = inventory[other_cat].get(other_type, [])
+                if not instances:
+                    return
+                instance = instances[0]
+                label = f"{other_cat}:{norm(other_type)}"
+
+                if label in seen_interacted:
+                    return
+                seen_interacted.add(label)
+
+                for comp in instance.get("components", []):
+                    comp_states = comp.get("states")
+                    if not comp_states:
+                        continue
+                    state_name = f"{label}.{norm(comp['name'])}"
+                    if comp_states["kind"] == "dynamic_receptor":
+                        values = self.get_receptor_domain(
+                            other_cat, other_type, instance["id"], comp["name"]
+                        )
+                        template["states"].append({"name": state_name, "kind": "enum", "values": values})
+                    else:
+                        template["states"].append({
+                            "name": state_name,
+                            "kind": comp_states["kind"],
+                            **{k: v for k, v in comp_states.items() if k != "kind"}
+                        })
+
+                for sname, sinfo in instance.get("states", {}).items():
+                    # skip material domain state — resolved separately by get_material_state
+                    if sinfo.get("domain") == "materials":
+                        continue
+                    # resolve location domain
+                    if sinfo.get("domain") == "locations":
+                        loc_values = get_location_domain(other_cat, other_type, other_id)
+                        if loc_values:
+                            template["states"].append({
+                                "name": f"{label}.{norm(sname)}",
+                                "kind": "enum",
+                                "values": loc_values
+                            })
+                        # if no locations found, drop it (will be caught by domain filter anyway)
+                        continue
+                    
+                    template["states"].append({
+                        "name": f"{label}.{norm(sname)}",
+                        "kind": sinfo["kind"],
+                        **{k: v for k, v in sinfo.items() if k != "kind"}
+                    })
+
+                mat_state = get_material_state(instance, label)
+                if mat_state:
+                    template["states"].append(mat_state)
+
+            else:
+                instance = inventory[other_cat][other_type][int(other_id)]
+                label = f"{other_cat}:{norm(other_type)}[{other_id}]"
+
+                if label in seen_interacted:
+                    return
+                seen_interacted.add(label)
+
+                for comp in instance.get("components", []):
+                    comp_states = comp.get("states")
+                    if not comp_states:
+                        continue
+                    state_name = f"{label}.{norm(comp['name'])}"
+                    if comp_states["kind"] == "dynamic_receptor":
+                        values = self.get_receptor_domain(
+                            other_cat, other_type, int(other_id), comp["name"]
+                        )
+                        template["states"].append({"name": state_name, "kind": "enum", "values": values})
+                    else:
+                        template["states"].append({
+                            "name": state_name,
+                            "kind": comp_states["kind"],
+                            **{k: v for k, v in comp_states.items() if k != "kind"}
+                        })
+
+                for sname, sinfo in instance.get("states", {}).items():
+                    # skip material domain state — resolved separately by get_material_state
+                    if sinfo.get("domain") == "materials":
+                        continue
+                    # resolve location domain
+                    if sinfo.get("domain") == "locations":
+                        loc_values = get_location_domain(other_cat, other_type, other_id)
+                        if loc_values:
+                            template["states"].append({
+                                "name": f"{label}.{norm(sname)}",
+                                "kind": "enum",
+                                "values": loc_values
+                            })
+                        # if no locations found, drop it (will be caught by domain filter anyway)
+                        continue
+                    template["states"].append({
+                        "name": f"{label}.{norm(sname)}",
+                        "kind": sinfo["kind"],
+                        **{k: v for k, v in sinfo.items() if k != "kind"}
+                    })
+
+                mat_state = get_material_state(instance, label)
+                if mat_state:
+                    template["states"].append(mat_state)
+
+        # direct interactions
+        for inter in interactions:
+            src = inter["source"]
+            tgt = inter["target"]
+
+            is_source = (
+                src["category"] == cat and
+                src["type"] == type_name and
+                src.get("id") in (str(obj_id), "*")
+            )
+            is_target = (
+                tgt["category"] == cat and
+                tgt["type"] == type_name and
+                tgt.get("id") in (str(obj_id), "*")
+            )
+
+            if not (is_source or is_target):
+                continue
+
+            other = tgt if is_source else src
+            add_interacted_states(other["category"], other["type"], other["id"])
+
+            # 1-hop mediated: if current object is source of a transfer,
+            # also collect the final target of any onward transfer from the mediator
+            if is_source and inter["type"] == "transfer":
+                mediator_cat = tgt["category"]
+                mediator_type = tgt["type"]
+
+                for inter2 in interactions:
+                    if inter2["type"] != "transfer":
+                        continue
+                    if (
+                        inter2["source"]["category"] == mediator_cat and
+                        inter2["source"]["type"] == mediator_type
+                    ):
+                        final = inter2["target"]
+                        add_interacted_states(final["category"], final["type"], final["id"])
+        
+        # remove unresolved domain states
+        template["states"] = [
+            s for s in template["states"]
+            if "domain" not in s
+        ]
+        
         # -------------------------------------------------
         # 2️⃣ CONTROL ACTIONS
         # -------------------------------------------------
@@ -1859,7 +2127,7 @@ class LabInventoryApp(tk.Tk):
                         contains = source_obj.get("contains")
                         if contains and contains.get("entity_type") == "material":
                             material_labels.append(
-                                f"material:{norm(contains['type_name'])}"
+                                norm(contains['type_name'])
                             )
 
                     # source is tool/instrument
@@ -1915,7 +2183,7 @@ class LabInventoryApp(tk.Tk):
                     # object is container
                     contains = obj.get("contains")
                     if contains and contains.get("entity_type") == "material":
-                        base_material = f"material:{norm(contains['type_name'])}"
+                        base_material = norm(contains['type_name'])
                         material_labels.append(base_material)
 
                     # object is tool/instrument
