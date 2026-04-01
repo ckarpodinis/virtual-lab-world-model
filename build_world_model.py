@@ -3,15 +3,18 @@ import argparse
 from collections import defaultdict
 
 
-def encode_state(state_dict):
-    return tuple(sorted(state_dict.items()))
+def encode_state(state_dict, ignore_features):
+    return tuple(sorted(
+        (k, v) for k, v in state_dict.items()
+        if k not in ignore_features
+    ))
 
 
 def decode_state(state_tuple):
     return dict(state_tuple)
 
 
-def build_world_model(filename):
+def build_world_model(filename, ignore_features):
 
     counts = defaultdict(lambda: defaultdict(lambda: {"count": 0, "reward_sum": 0}))
 
@@ -19,9 +22,9 @@ def build_world_model(filename):
         for line in f:
             t = json.loads(line)
 
-            s = encode_state(t["state"])
+            s = encode_state(t["state"], ignore_features)
             a = t["action"]
-            ns = encode_state(t["next_state"])
+            ns = encode_state(t["next_state"], ignore_features)
             r = t.get("reward", 0)
 
             counts[(s, a)][ns]["count"] += 1
@@ -107,9 +110,21 @@ def main():
         help="Output JSON file"
     )
 
+    parser.add_argument(
+        "--ignore-features",
+        nargs="+",
+        default=[],
+        metavar="FEATURE",
+        help="State features to collapse/ignore (e.g. tool:aluminum_foil.quantity)"
+    )
+
     args = parser.parse_args()
 
-    model = build_world_model(args.input)
+    ignore_features = set(args.ignore_features)
+    if ignore_features:
+        print(f"Ignoring features: {ignore_features}")
+
+    model = build_world_model(args.input, ignore_features)
 
     # print to console
     print_model(model)

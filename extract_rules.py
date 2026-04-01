@@ -29,11 +29,14 @@ parser.add_argument("--epsilon", type=float, default=0.1,
                     help="Ambiguity band below threshold (default: 0.1)")
 parser.add_argument("--print-json", action="store_true",
                     help="Export rules to JSON file")
+parser.add_argument("--conf-threshold", type=float, default=0.9,
+                    help="Min weighted confidence for NECESSARY, max for FORBIDDEN (default: 0.9)")
 args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
 EPSILON           = args.epsilon
 INVALID_THRESHOLD = VALID_THRESHOLD - EPSILON
+CONF_THRESHOLD     = args.conf_threshold
 
 # ── 1. Parse the world model JSON ─────────────────────────────────────────────
 def parse_world_model(path):
@@ -92,43 +95,75 @@ for action in sorted(by_action):
 # ── 4. Rule extraction ────────────────────────────────────────────────────────
 def extract_rules(entries_a):
     """
-    For each state feature, classify each value as:
-      NECESSARY  — ALL valid entries share this value (required precondition).
-                   Does NOT imply sufficiency; other features may also be needed.
-      FORBIDDEN  — NO valid entry has this value (always blocks validity).
-      NEUTRAL    — Appears in both valid and invalid; not informative alone.
+    For each state feature, classify each value using experience-weighted confidence:
+
+      NECESSARY  — this value has weighted confidence >= CONF_THRESHOLD among valid
+                   entries, AND all other values have confidence <= (1-CONF_THRESHOLD).
+                   This means the feature is essentially binary-like and one value
+                   dominates valid entries cleanly.
+
+      FORBIDDEN  — this value never appears in any valid entry (conf == 0.0).
+
+      NEUTRAL    — everything else (multi-valued features like quantity, or values
+                   that appear in both valid and invalid entries).
     """
     valid   = [e for e in entries_a if e["label"] == "VALID"]
     invalid = [e for e in entries_a if e["label"] == "INVALID"]
 
     if not valid and not invalid:
         return {"note": "all entries ambiguous, no clean rules extractable"}
-    if not invalid:
-        return {"note": "always valid regardless of state"}
+    # Don't short-circuit on "no invalid" — NECESSARY can still be detected
+    # from a skewed confidence distribution even when all entries are valid.
+    # E.g. cap.close: cap='opened' has conf=0.94, cap='closed' conf=0.06
+    # → cap='opened' is NECESSARY even though no invalid entries exist.
     if not valid:
         return {"note": "always invalid regardless of state"}
 
     state_keys = sorted(entries_a[0]["state"].keys())
-    rules = {}
 
+    # Compute experience-weighted confidence per feature value among VALID entries
+    def weighted_conf(entries_valid, key):
+        weighted_counts = {}
+        total_weight = 0
+        for e in entries_valid:
+            val = e["state"][key]
+            weight = sum(t["count"] for t in e.get("transitions", [])) or 1
+            weighted_counts[val] = weighted_counts.get(val, 0) + weight
+            total_weight += weight
+        if total_weight == 0:
+            return {}
+        return {val: w / total_weight for val, w in weighted_counts.items()}
+
+    rules = {}
     for key in state_keys:
-        valid_vals   = set(e["state"][key] for e in valid)
+        conf_map = weighted_conf(valid, key)
         invalid_vals = set(e["state"][key] for e in invalid)
         all_vals     = set(e["state"][key] for e in entries_a)
 
         result = {}
         for val in sorted(all_vals, key=str):
-            if val in invalid_vals and val not in valid_vals:
-                result[val] = "FORBIDDEN"
+            c = conf_map.get(val, 0.0)
+            if c == 0.0 and val in invalid_vals:
+                result[val] = "FORBIDDEN"   # never in valid, only when invalids exist
             else:
                 result[val] = "NEUTRAL"
 
-        # NECESSARY: all valid entries share exactly this one value
-        if len(valid_vals) == 1:
-            (sole,) = valid_vals
-            result[sole] = "NECESSARY"
+        # NECESSARY: exactly one value dominates valid entries (conf >= CONF_THRESHOLD)
+        # AND all other values seen in valid have conf <= (1 - CONF_THRESHOLD)
+        high_conf_vals = [v for v, c in conf_map.items() if c >= CONF_THRESHOLD]
+        if len(high_conf_vals) == 1:
+            sole = high_conf_vals[0]
+            other_confs = [c for v, c in conf_map.items() if v != sole]
+            if all(c <= (1 - CONF_THRESHOLD) for c in other_confs):
+                result[sole] = "NECESSARY"
 
         rules[key] = result
+
+    # Return "always valid" only if no NECESSARY values found and no invalid entries
+    has_necessary = any(role == "NECESSARY"
+                        for vm in rules.values() for role in vm.values())
+    if not invalid and not has_necessary:
+        return {"note": "always valid regardless of state"}
 
     return rules
 
@@ -236,7 +271,7 @@ for action in sorted(by_action):
     invalid    = [e for e in entries_a if e["label"] == "INVALID"]
     state_keys = sorted(entries_a[0]["state"].keys())
     rules      = extract_rules(entries_a)
-    prob_unweighted = extract_probabilistic_preconditions(entries_a)
+#    prob_unweighted = extract_probabilistic_preconditions(entries_a)
     prob_weighted   = extract_probabilistic_preconditions_weighted(entries_a)
 
     print(f"\nAction: '{action}'")
@@ -271,16 +306,16 @@ for action in sorted(by_action):
             state_str = ",  ".join(f"{k}={repr(e['state'][k])}" for k in state_keys)
             print(f"      reward={e['expected_reward']:.3f}  |  {state_str}")
     
-    if "note" not in prob_unweighted:
-        print(f"  ~ PROBABILISTIC (state-based):")
-        for key, items in prob_unweighted.items():
-            vals = []
-            for item in items:
-                vals.append(
-                    f"{key}={repr(item['value'])} "
-                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
-                )
-            print("    " + " ; ".join(vals))
+#    if "note" not in prob_unweighted:
+#        print(f"  ~ PROBABILISTIC (state-based):")
+#        for key, items in prob_unweighted.items():
+#            vals = []
+#            for item in items:
+#                vals.append(
+#                    f"{key}={repr(item['value'])} "
+#                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
+#                )
+#            print("    " + " ; ".join(vals))
     if "note" not in prob_weighted:
         print(f"  ~ PROBABILISTIC (experience-weighted):")
         for key, items in prob_weighted.items():
@@ -341,33 +376,40 @@ for action_a in sorted(by_action):
         necessary_vals = [v for v, role in val_map.items() if role == "NECESSARY"]
 
         for nec_val in necessary_vals:
-            # Step 1: confirm negation — every entry where feature != nec_val
-            #         must be INVALID (true precondition check)
-            negations = [e for e in entries_a if e["state"][feature] != nec_val]
-            if not negations:
-                continue
-            if any(e["label"] == "VALID" for e in negations):
-                continue   # negation is not always INVALID — not a true precondition
+            negation_vals = [v for v, role in val_map.items() if v != nec_val]
+            
+            if negation_vals and all(val_map.get(v) == "FORBIDDEN" for v in negation_vals):
+                strength = "strong"
+            else:
+                strength = "weak"
 
-            # Step 2: find all trusted producers, exclude self-loops
+            # proceed to producer lookup...
             producers = sorted(producer_map.get((feature, nec_val), set()) - {action_a})
 
             if producers:
-                all_producers.update(producers)
                 for p in producers:
-                    precedence_data.append((p, feature, nec_val, action_a))
+                    precedence_data.append((p, feature, nec_val, action_a, strength))
             else:
-                no_producer_fv.append((feature, nec_val))
-                precedence_data.append((None, feature, nec_val, action_a))
+                precedence_data.append((None, feature, nec_val, action_a, strength))
 
-    # Step 3: emit one rule per producer action, plus any no-producer entries
-    for producer in sorted(all_producers):
-        print(f"\n  '{producer}'  must precede  '{action_a}'")
-        any_rule = True
-
-    for feature, nec_val in no_producer_fv:
-        print(f"\n  '{feature}={repr(nec_val)}' (no known producer)  must precede  '{action_a}'")
-        any_rule = True
+seen = set()
+for (action_b, feature, nec_val, action_a, strength) in sorted(
+        precedence_data, key=lambda x: (x[3], str(x[0]))):
+    key = (action_b, action_a)
+    if key in seen:
+        continue
+    seen.add(key)
+    if action_b:
+        if strength == "strong":
+            print(f"\n  ✓ STRONG:  '{action_b}' must precede '{action_a}'")
+        else:
+            print(f"\n  ⚠ WEAK:    '{action_b}' must precede '{action_a}'")
+    else:
+        if strength == "strong":
+            print(f"\n  ✓ STRONG:  '{feature}={repr(nec_val)}' (no known producer)  must precede  '{action_a}'")
+        else:
+            print(f"\n  ⚠ WEAK:    '{feature}={repr(nec_val)}' (no known producer)  must precede  '{action_a}'")
+    any_rule = True
 
 if not any_rule:
     print("\n  No precedence rules found with current threshold.")
@@ -380,7 +422,7 @@ if args.template:
     with open(args.template) as f:
         tmpl = json.load(f)
 
-    obj_id       = tmpl["object"]                           # "instrument:electronic_scale[0]"
+    obj_id       = tmpl["object"]
     action_index = {a["name"]: a for a in tmpl["actions"]}
 
     def lookup_action(action_name):
@@ -431,7 +473,6 @@ if args.template:
             return [{"state": feature, "value": str(value)}]
         tpl = lookup_action(action_b)
         if tpl.get("type") == "control":
-            # "power_button.set(value=on)" -> base "power_button.set" -> property="power_button", action="set"
             base_b = action_b.split("(")[0]
             parts = base_b.rsplit(".", 1)
 
