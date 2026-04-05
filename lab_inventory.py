@@ -160,6 +160,7 @@ class LabInventoryApp(tk.Tk):
         ttk.Button(control_frame, text="Clone Selected", command=self.clone_selected).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Add Interaction", command=self.open_interaction_editor).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Generate MDP Template", command=self.generate_selected_mdp).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Generate All MDP Templates", command=self.generate_all_mdp).pack(fill=tk.X, pady=2)
         ttk.Button(control_frame, text="Visualize Graph", command=self.visualize_graph).pack(fill=tk.X, pady=5)
 
         self.tree = ttk.Treeview(left_frame, show="tree")
@@ -1771,6 +1772,46 @@ class LabInventoryApp(tk.Tk):
                 })
 
         for state_name, state_info in obj.get("states", {}).items():
+            # resolve material domain for the main object itself
+            if state_info.get("domain") == "materials":
+                possible_materials = set()
+                for inter2 in interactions:
+                    if inter2["type"] != "transfer":
+                        continue
+                    tgt2 = inter2["target"]
+                    if not (tgt2["category"] == cat and tgt2["type"] == type_name and
+                            tgt2.get("id") in (str(obj_id), "*")):
+                        continue
+                    src2 = inter2["source"]
+                    if src2["category"] == "container":
+                        src2_id = int(src2["id"]) if src2["id"] != "*" else 0
+                        src2_obj = inventory[src2["category"]][src2["type"]][src2_id]
+                        contains = src2_obj.get("contains")
+                        if contains and contains.get("entity_type") == "material":
+                            possible_materials.add(f"material:{norm(contains['type_name'])}")
+                    elif src2["category"] in ("tool", "instrument"):
+                        for inter3 in interactions:
+                            if inter3["type"] != "transfer":
+                                continue
+                            if not (inter3["target"]["category"] == src2["category"] and
+                                    inter3["target"]["type"] == src2["type"]):
+                                continue
+                            src3 = inter3["source"]
+                            if src3["category"] == "container":
+                                src3_id = int(src3["id"]) if src3["id"] != "*" else 0
+                                src3_obj = inventory[src3["category"]][src3["type"]][src3_id]
+                                contains = src3_obj.get("contains")
+                                if contains and contains.get("entity_type") == "material":
+                                    possible_materials.add(f"material:{norm(contains['type_name'])}")
+                if possible_materials:
+                    template["states"].append({
+                        "name": norm(state_name),
+                        "kind": "enum",
+                        "values": ["none"] + sorted(possible_materials)
+                    })
+                # if no materials found, skip — domain filter will drop it anyway
+                continue
+
             template["states"].append({
                 "name": norm(state_name),
                 "kind": state_info["kind"],
@@ -2035,11 +2076,22 @@ class LabInventoryApp(tk.Tk):
                         final = inter2["target"]
                         add_interacted_states(final["category"], final["type"], final["id"])
         
-        # remove unresolved domain states
-        template["states"] = [
-            s for s in template["states"]
-            if "domain" not in s
-        ]
+        # remove unresolved domain states, quantity states, and material states for containers
+        def should_keep(s):
+            if "domain" in s:
+                return False
+            name = s.get("name", "")
+            if name == "quantity" or name.endswith(".quantity"):
+                return False
+            # drop material state if main object is a container
+            if cat == "container" and name == "material":
+                return False
+            # drop material state for interacted container objects
+            if name.startswith("container:") and name.endswith(".material"):
+                return False
+            return True
+
+        template["states"] = [s for s in template["states"] if should_keep(s)]
         
         # -------------------------------------------------
         # 2️⃣ CONTROL ACTIONS
@@ -2309,6 +2361,115 @@ class LabInventoryApp(tk.Tk):
         # ---- Set suggested filename for saving ----
         safe_type = type_name.replace(" ", "_")
         self.current_right_panel_filename = f"{cat}_{safe_type}_{obj_id}_mdp_template.json"
+
+    def generate_all_mdp(self):
+        # -----------------------------------------------
+        # Build list of all objects
+        # -----------------------------------------------
+        all_objects = []
+        for cat in inventory:
+            for type_name in inventory[cat]:
+                for item in inventory[cat][type_name]:
+                    all_objects.append((cat, type_name, item["id"]))
+
+        if not all_objects:
+            messagebox.showerror("Error", "No objects in inventory.")
+            return
+
+        # -----------------------------------------------
+        # Selection dialog
+        # -----------------------------------------------
+        sel_win = tk.Toplevel(self)
+        sel_win.title("Select Objects for MDP Generation")
+        sel_win.resizable(False, False)
+
+        ttk.Label(sel_win, text="Select objects to generate MDP templates for:").pack(
+            anchor="w", padx=10, pady=(10, 2)
+        )
+
+        # Scrollable listbox
+        frame = ttk.Frame(sel_win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        scrollbar = ttk.Scrollbar(frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        listbox = tk.Listbox(
+            frame,
+            selectmode=tk.MULTIPLE,
+            yscrollcommand=scrollbar.set,
+            width=50,
+            height=20
+        )
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        for cat, type_name, obj_id in all_objects:
+            listbox.insert(tk.END, f"{cat}:{type_name.replace(' ', '_')}[{obj_id}]")
+
+        # Select all by default
+        listbox.select_set(0, tk.END)
+
+        # Select all / deselect all buttons
+        btn_frame = ttk.Frame(sel_win)
+        btn_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        ttk.Button(
+            btn_frame, text="Select All",
+            command=lambda: listbox.select_set(0, tk.END)
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            btn_frame, text="Deselect All",
+            command=lambda: listbox.selection_clear(0, tk.END)
+        ).pack(side=tk.LEFT, padx=2)
+
+        # -----------------------------------------------
+        # Confirm
+        # -----------------------------------------------
+        def confirm():
+            selected_indices = listbox.curselection()
+            if not selected_indices:
+                messagebox.showerror("Error", "No objects selected.")
+                return
+
+            selected_objects = [all_objects[i] for i in selected_indices]
+
+            # Ask for output directory
+            out_dir = filedialog.askdirectory(title="Select Output Directory")
+            if not out_dir:
+                return
+
+            sel_win.destroy()
+
+            # Generate and save
+            errors = []
+            for cat, type_name, obj_id in selected_objects:
+                try:
+                    template = self.generate_object_mdp_template(cat, type_name, obj_id)
+                    safe_type = type_name.replace(" ", "_")
+                    filename = f"{cat}_{safe_type}_{obj_id}_mdp_template.json"
+                    filepath = os.path.join(out_dir, filename)
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        json.dump(template, f, indent=2)
+                except Exception as e:
+                    errors.append(f"{cat}:{type_name}[{obj_id}]: {e}")
+
+            if errors:
+                messagebox.showwarning(
+                    "Completed with errors",
+                    f"Generated with {len(errors)} error(s):\n" + "\n".join(errors)
+                )
+            else:
+                messagebox.showinfo(
+                    "Done",
+                    f"Generated {len(selected_objects)} MDP template(s) in:\n{out_dir}"
+                )
+
+        ttk.Button(sel_win, text="Generate", command=confirm).pack(pady=10)
+
+        self.center_window(sel_win)
+        sel_win.grab_set()
 
     def show_inventory_json(self):
         self.refresh_json()
