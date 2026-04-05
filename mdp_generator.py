@@ -1,9 +1,50 @@
 import uuid
 import json
 import argparse
+from itertools import product
 from openai import OpenAI
 
 client = OpenAI()
+
+def build_valid_actions(template):
+    """Build the set of canonical valid action strings from the template.
+    Expands list-valued parameters into all valid combinations."""
+    valid = set()
+    for action in template["actions"]:
+        name = action["name"]
+        params = action.get("parameters", {})
+        if not params:
+            valid.add(f"{name}()")
+            continue
+        param_keys = list(params.keys())
+        param_vals = [v if isinstance(v, list) else [v] for v in params.values()]
+        for combo in product(*param_vals):
+            parts = ", ".join(f"{k}={v}" for k, v in zip(param_keys, combo))
+            valid.add(f"{name}({parts})")
+    return valid
+
+def validate_state(state, template):
+    """Check that a state assigns valid values to all template state variables.
+    Returns (is_valid, reason_or_None)."""
+    for var in template["states"]:
+        name = var["name"]
+        if name not in state:
+            return False, f"missing variable '{name}'"
+        if var["kind"] == "enum" and state[name] not in var["values"]:
+            return False, f"'{name}'={state[name]!r} not in {var['values']}"
+    return True, None
+
+def validate_transition(t, valid_actions, template):
+    """Return (is_valid, reason) for a generated transition."""
+    if t.get("action") not in valid_actions:
+        return False, f"unknown action: {t.get('action')!r}"
+    ok, reason = validate_state(t.get("state", {}), template)
+    if not ok:
+        return False, f"invalid state — {reason}"
+    ok, reason = validate_state(t.get("next_state", {}), template)
+    if not ok:
+        return False, f"invalid next_state — {reason}"
+    return True, None
 
 SYSTEM_PROMPT = """
 You generate state-transition data for Markov Decision Processes (MDPs)
@@ -175,6 +216,8 @@ def generate_transitions(mdp_template, N, model="gpt-4o"):
 
     batch_size = 20
     all_transitions = []
+    valid_actions = build_valid_actions(mdp_template)
+    print(f"Valid actions ({len(valid_actions)}): {sorted(valid_actions)}")
 
     while len(all_transitions) < N:
 
@@ -200,9 +243,20 @@ def generate_transitions(mdp_template, N, model="gpt-4o"):
 
         batch = data.get("transitions", [])
 
-        all_transitions.extend(batch)
+        # Validate each transition — discard any with hallucinated actions or invalid states
+        valid_batch = []
+        discarded = 0
+        for t in batch:
+            ok, reason = validate_transition(t, valid_actions, mdp_template)
+            if ok:
+                valid_batch.append(t)
+            else:
+                discarded += 1
+                print(f"  ⚠ Discarded invalid transition: {reason} | action={t.get('action')}")
 
-        print(f"Generated {len(batch)} transitions (total={len(all_transitions)})")
+        all_transitions.extend(valid_batch)
+
+        print(f"Generated {len(batch)} transitions, kept {len(valid_batch)}, discarded {discarded} (total={len(all_transitions)})")
 
     return all_transitions[:N]
 
