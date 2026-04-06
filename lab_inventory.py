@@ -35,20 +35,6 @@ COMPONENT_STATE_SPECS = {
     # others configured by user in UI
 }
 
-OBJECT_ACTIONS = [
-    "pick_up",
-    "place",
-    "move",
-    "rotate",
-    "attach",
-    "detach"
-]
-
-INTERACTION_TYPES = [
-    "place",
-    "transfer"
-]
-
 # -----------------------------
 # Persistence
 # -----------------------------
@@ -274,13 +260,11 @@ class LabInventoryApp(tk.Tk):
         # -----------------------------
         # Object-Level Actions
         # -----------------------------
-        ttk.Label(win, text="Object Actions").grid(row=row, column=0, padx=5)
-        action_listbox = tk.Listbox(win, selectmode=tk.MULTIPLE, height=6)
-        action_listbox.grid(row=row, column=1, padx=5, pady=5)
-
-        for action in OBJECT_ACTIONS:
-            action_listbox.insert(tk.END, action)
-
+        ttk.Label(win, text="Object Actions").grid(row=row, column=0, padx=5, sticky="w")
+        ttk.Label(win, text="(comma-separated)", foreground="gray").grid(row=row, column=1, sticky="w", padx=5)
+        row += 1
+        action_entry = ttk.Entry(win, width=40)
+        action_entry.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
         # -----------------------------
@@ -327,9 +311,7 @@ class LabInventoryApp(tk.Tk):
             item = inventory[cat][type_name][idx]
 
             existing_actions = item.get("object_actions", [])
-            for i, action in enumerate(OBJECT_ACTIONS):
-                if action in existing_actions:
-                    action_listbox.select_set(i)
+            action_entry.insert(0, ", ".join(existing_actions))
 
             states = item.get("states", {})
             movable_var.set("location" in states)
@@ -359,8 +341,8 @@ class LabInventoryApp(tk.Tk):
                 messagebox.showerror("Error", "Type name required.")
                 return
 
-            selected_indices = action_listbox.curselection()
-            selected_object_actions = [OBJECT_ACTIONS[i] for i in selected_indices]
+            raw_actions = action_entry.get().strip()
+            selected_object_actions = [a.strip() for a in raw_actions.split(",") if a.strip()]
 
             material_name = material_entry.get().strip() if category == "container" else None
 
@@ -916,20 +898,15 @@ class LabInventoryApp(tk.Tk):
         row += 1
 
         # Object Actions (if applicable)
-        action_listbox = None
+        clone_action_entry = None
         if category != "material":
-            ttk.Label(win, text="Object Actions").grid(row=row, column=0, padx=5)
-            action_listbox = tk.Listbox(win, selectmode=tk.MULTIPLE, height=6)
-            action_listbox.grid(row=row, column=1, padx=5, pady=5)
-
-            for action in OBJECT_ACTIONS:
-                action_listbox.insert(tk.END, action)
-
+            ttk.Label(win, text="Object Actions").grid(row=row, column=0, padx=5, sticky="w")
+            ttk.Label(win, text="(comma-separated)", foreground="gray").grid(row=row, column=1, sticky="w", padx=5)
+            row += 1
+            clone_action_entry = ttk.Entry(win, width=40)
+            clone_action_entry.grid(row=row, column=1, padx=5, pady=5)
             existing = cloned_item.get("object_actions", [])
-            for i, action in enumerate(OBJECT_ACTIONS):
-                if action in existing:
-                    action_listbox.select_set(i)
-
+            clone_action_entry.insert(0, ", ".join(existing))
             row += 1
 
         # Material field (containers only)
@@ -961,11 +938,9 @@ class LabInventoryApp(tk.Tk):
             new_item = copy.deepcopy(cloned_item)
             new_item["id"] = new_id
 
-            if new_category != "material":
-                selected_indices = action_listbox.curselection()
-                new_item["object_actions"] = [
-                    OBJECT_ACTIONS[i] for i in selected_indices
-                ]
+            if new_category != "material" and clone_action_entry is not None:
+                raw_actions = clone_action_entry.get().strip()
+                new_item["object_actions"] = [a.strip() for a in raw_actions.split(",") if a.strip()]
 
             if new_category == "container":
                 material_name = material_entry.get().strip()
@@ -1019,319 +994,447 @@ class LabInventoryApp(tk.Tk):
         is_edit = interaction_id is not None
         interaction = interactions[interaction_id] if is_edit else None
 
+        # Map between internal JSON type and human-readable display label
+        DISPLAY_TYPE  = {"place": "move object", "transfer": "transfer material"}
+        INTERNAL_TYPE = {"move object": "place", "transfer material": "transfer"}
+        DEFAULT_ACTION = {"move object": "place", "transfer material": "transfer"}
+
         win = tk.Toplevel(self)
         win.title("Edit Interaction" if is_edit else "Add Interaction")
         win.resizable(False, False)
 
         row = 0
 
-        # -----------------------------
-        # Interaction Type
-        # -----------------------------
+        # ─────────────────────────────────────────
+        # Step 1 – Interaction Type
+        # ─────────────────────────────────────────
         ttk.Label(win, text="Interaction Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        type_cb = ttk.Combobox(win, values=["place", "transfer"], state="readonly", width=30)
+        type_cb = ttk.Combobox(win, values=["move object", "transfer material"],
+                                state="readonly", width=30)
         type_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        # -----------------------------
-        # SOURCE
-        # -----------------------------
-        ttk.Label(win, text="Source Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        # ─────────────────────────────────────────
+        # SOURCE section
+        # ─────────────────────────────────────────
+        source_section_label = ttk.Label(win, text="", font=("", 9, "bold"))
+        source_section_label.grid(row=row, column=0, columnspan=2, padx=5, pady=(8, 0), sticky="w")
+        row += 1
+
+        ttk.Label(win, text="Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
         source_cat_cb = ttk.Combobox(win, state="readonly", width=30)
         source_cat_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        ttk.Label(win, text="Source Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(win, text="Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
         source_type_cb = ttk.Combobox(win, state="readonly", width=30)
         source_type_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        ttk.Label(win, text="Source ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        source_id_cb = ttk.Combobox(win, width=30, state="readonly")
+        ttk.Label(win, text="ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        source_id_cb = ttk.Combobox(win, state="readonly", width=30)
         source_id_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        # (No source component in your semantics)
-        # -----------------------------
-        # TARGET
-        # -----------------------------
-        ttk.Label(win, text="Target Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        # ─────────────────────────────────────────
+        # TARGET section
+        # ─────────────────────────────────────────
+        target_section_label = ttk.Label(win, text="", font=("", 9, "bold"))
+        target_section_label.grid(row=row, column=0, columnspan=2, padx=5, pady=(8, 0), sticky="w")
+        row += 1
+
+        ttk.Label(win, text="Category *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
         target_cat_cb = ttk.Combobox(win, state="readonly", width=30)
         target_cat_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        ttk.Label(win, text="Target Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        ttk.Label(win, text="Type *").grid(row=row, column=0, padx=5, pady=5, sticky="w")
         target_type_cb = ttk.Combobox(win, state="readonly", width=30)
         target_type_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        ttk.Label(win, text="Target ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
-        target_id_cb = ttk.Combobox(win, width=30, state="readonly")
+        ttk.Label(win, text="ID (or *)").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        target_id_cb = ttk.Combobox(win, state="readonly", width=30)
         target_id_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        # Target component (ONLY for place)
-        target_comp_label = ttk.Label(win, text="Target Receptor Component *")
-        target_comp_cb = ttk.Combobox(win, width=30, state="readonly")
+        # Receptor component — visible only for "move object"
+        target_comp_label = ttk.Label(win, text="Receptor Component *")
+        target_comp_cb   = ttk.Combobox(win, width=30, state="readonly")
         target_comp_label.grid(row=row, column=0, padx=5, pady=5, sticky="w")
         target_comp_cb.grid(row=row, column=1, padx=5, pady=5)
         row += 1
 
-        # -----------------------------
+        # ─────────────────────────────────────────
+        # Action
+        # ─────────────────────────────────────────
+        action_sep = ttk.Label(win, text="", font=("", 9, "bold"))
+        action_sep.grid(row=row, column=0, columnspan=2, padx=5, pady=(8, 0), sticky="w")
+        row += 1
+
+        ttk.Label(win, text="Action").grid(row=row, column=0, padx=5, pady=5, sticky="w")
+        action_cb = ttk.Combobox(win, state="readonly", width=30)
+        action_cb.grid(row=row, column=1, padx=5, pady=5)
+        row += 1
+
+        # ─────────────────────────────────────────
+        # Helper: resolve available actions for any object ref.
+        # For instruments: union of all component actions.
+        # For everything else: object_actions.
+        # ─────────────────────────────────────────
+        def get_object_actions(cat, type_name, obj_id_or_star):
+            if not cat or not type_name or not obj_id_or_star:
+                return []
+            if obj_id_or_star == "*":
+                items = inventory.get(cat, {}).get(type_name, [])
+                item = items[0] if items else None
+            else:
+                try:
+                    item = inventory[cat][type_name][int(obj_id_or_star)]
+                except Exception:
+                    item = None
+            if not item:
+                return []
+            if cat == "instrument":
+                # Full-path labels: "{action} {component name}", deduplicated, order preserved
+                seen = set()
+                actions = []
+                for comp in item.get("components", []):
+                    for a in comp.get("actions", []):
+                        label = f"{a} {comp['name']}"
+                        if label not in seen:
+                            actions.append(label)
+                            seen.add(label)
+                return actions
+            return item.get("object_actions", [])
+
+        # ─────────────────────────────────────────
         # Candidate builders
-        # -----------------------------
+        # ─────────────────────────────────────────
+        def material_capable_candidates():
+            """
+            Objects that can hold material: anything with a 'quantity' state,
+            plus every item in the 'container' category (even if quantity state
+            wasn't explicitly declared).
+            """
+            found = set(map(tuple, self.get_objects_with_state("quantity")))
+            for tname in inventory.get("container", {}):
+                for item in inventory["container"][tname]:
+                    found.add(("container", tname, str(item["id"])))
+            return sorted(found)
+
         def src_candidates():
-            """
-            Returns list of tuples (cat, type, id_str)
-            For place: objects with 'location'
-            For transfer: objects with 'quantity'
-            """
             t = type_cb.get()
-            if t == "place":
+            if t == "move object":
+                # movable objects: those with a 'location' state
                 return self.get_objects_with_state("location")
-            if t == "transfer":
-                return self.get_objects_with_state("quantity")
+            if t == "transfer material":
+                return material_capable_candidates()
             return []
 
-        def tgt_candidates_place_objects():
-            """
-            For place targets, we restrict to objects that HAVE at least one receptor component.
-            Return list of tuples (cat, type, id_str).
-            """
-            recs = self.get_receptor_components()  # (cat, type, id, comp_name)
-            return sorted({(c, t, i) for (c, t, i, comp) in recs})
+        def tgt_candidates():
+            t = type_cb.get()
+            if t == "move object":
+                # objects with a receptor component OR that can contain material
+                recs = self.get_receptor_components()
+                found = {(c, tn, i) for (c, tn, i, _) in recs}
+                for (c, tn, i) in material_capable_candidates():
+                    found.add((c, tn, i))
+                return sorted(found)
+            if t == "transfer material":
+                return material_capable_candidates()
+            return []
 
         def receptor_names_for_target(cat, tname, obj_id_or_star):
-            """
-            Return receptor component names for a specific object id OR "*" (use first instance).
-            """
             if not cat or not tname or not obj_id_or_star:
                 return []
-
-            # pick a concrete id for "*" to inspect components
             if obj_id_or_star == "*":
                 items = inventory.get(cat, {}).get(tname, [])
-                if not items:
-                    return []
-                item = items[0]
+                item = items[0] if items else None
             else:
                 try:
                     item = inventory[cat][tname][int(obj_id_or_star)]
                 except Exception:
-                    return []
+                    item = None
+            if not item:
+                return []
+            return [c["name"] for c in item.get("components", [])
+                    if c.get("type") == "receptor"]
 
-            names = []
-            for comp in item.get("components", []):
-                if comp.get("type") == "receptor":
-                    names.append(comp.get("name"))
-            return names
+        # ─────────────────────────────────────────
+        # Action dropdown refresh
+        # ─────────────────────────────────────────
+        def refresh_action_options():
+            t = type_cb.get()
+            default = DEFAULT_ACTION.get(t, t)
 
-        def tgt_candidates_transfer():
-            """
-            For transfer targets: objects with 'quantity' only.
-            """
-            return self.get_objects_with_state("quantity")
+            src_actions = get_object_actions(
+                source_cat_cb.get(), source_type_cb.get(), source_id_cb.get())
 
-        # -----------------------------
-        # UI rebuild routines (constraint-driven)
-        # -----------------------------
+            if t == "transfer material":
+                tgt_actions = get_object_actions(
+                    target_cat_cb.get(), target_type_cb.get(), target_id_cb.get())
+            else:
+                tgt_actions = []
+
+            # Default action first, then unique custom actions from source (and target for transfer)
+            seen = {default}
+            options = [default]
+            for a in (src_actions + tgt_actions):
+                if a not in seen:
+                    options.append(a)
+                    seen.add(a)
+
+            current = action_cb.get()
+            action_cb["values"] = options
+            if current not in options:
+                action_cb.set(default)
+
+        # ─────────────────────────────────────────
+        # UI rebuild helpers
+        # ─────────────────────────────────────────
         def clear_source():
-            source_cat_cb.set(""); source_cat_cb["values"] = []
+            source_cat_cb.set("");  source_cat_cb["values"]  = []
             source_type_cb.set(""); source_type_cb["values"] = []
-            source_id_cb.set(""); source_id_cb["values"] = []
+            source_id_cb.set("");   source_id_cb["values"]   = []
 
         def clear_target():
-            target_cat_cb.set(""); target_cat_cb["values"] = []
+            target_cat_cb.set("");  target_cat_cb["values"]  = []
             target_type_cb.set(""); target_type_cb["values"] = []
-            target_id_cb.set(""); target_id_cb["values"] = []
+            target_id_cb.set("");   target_id_cb["values"]   = []
             target_comp_cb.set(""); target_comp_cb["values"] = []
 
         def refresh_visibility():
-            # target receptor component is ONLY for place
-            if type_cb.get() == "place":
+            t = type_cb.get()
+            if t == "move object":
+                source_section_label.config(text="── What to move ──")
+                target_section_label.config(text="── Where to place ──")
+                action_sep.config(text="── Action ──")
                 target_comp_label.grid()
                 target_comp_cb.grid()
-            else:
+            elif t == "transfer material":
+                source_section_label.config(text="── Source ──")
+                target_section_label.config(text="── Target ──")
+                action_sep.config(text="── Action ──")
                 target_comp_label.grid_remove()
                 target_comp_cb.grid_remove()
                 target_comp_cb.set("")
                 target_comp_cb["values"] = []
+            else:
+                source_section_label.config(text="")
+                target_section_label.config(text="")
+                action_sep.config(text="")
+                target_comp_label.grid_remove()
+                target_comp_cb.grid_remove()
 
         def rebuild_all(event=None):
             clear_source()
             clear_target()
             refresh_visibility()
-
             t = type_cb.get()
             if not t:
+                action_cb["values"] = []
+                action_cb.set("")
                 return
-
-            # Populate source categories
             sc = src_candidates()
             source_cat_cb["values"] = sorted(set(c for (c, tn, i) in sc))
-
-            # Populate target categories
-            if t == "place":
-                tc = tgt_candidates_place_objects()
-                target_cat_cb["values"] = sorted(set(c for (c, tn, i) in tc))
-            else:  # transfer
-                tc = tgt_candidates_transfer()
-                target_cat_cb["values"] = sorted(set(c for (c, tn, i) in tc))
+            tc = tgt_candidates()
+            target_cat_cb["values"] = sorted(set(c for (c, tn, i) in tc))
+            # Reset action to the type default
+            default = DEFAULT_ACTION.get(t, t)
+            action_cb["values"] = [default]
+            action_cb.set(default)
 
         def update_source_types(event=None):
             cat = source_cat_cb.get()
-            sc = src_candidates()
-            source_type_cb.set("")
-            source_id_cb.set("")
+            sc  = src_candidates()
+            source_type_cb.set(""); source_id_cb.set("")
             source_type_cb["values"] = sorted(set(tn for (c, tn, i) in sc if c == cat))
 
         def update_source_ids(event=None):
             cat = source_cat_cb.get()
-            tn = source_type_cb.get()
-            sc = src_candidates()
+            tn  = source_type_cb.get()
+            sc  = src_candidates()
             ids = [i for (c, tname, i) in sc if c == cat and tname == tn]
             source_id_cb.set("")
             source_id_cb["values"] = ["*"] + sorted(ids, key=lambda x: int(x))
 
+        def on_source_id_selected(event=None):
+            refresh_action_options()
+
         def update_target_types(event=None):
             cat = target_cat_cb.get()
-            target_type_cb.set("")
-            target_id_cb.set("")
-            target_comp_cb.set("")
-            target_comp_cb["values"] = []
-
-            if type_cb.get() == "place":
-                tc = tgt_candidates_place_objects()
-            else:
-                tc = tgt_candidates_transfer()
-
+            target_type_cb.set(""); target_id_cb.set("")
+            target_comp_cb.set(""); target_comp_cb["values"] = []
+            tc = tgt_candidates()
             target_type_cb["values"] = sorted(set(tn for (c, tn, i) in tc if c == cat))
 
         def update_target_ids(event=None):
             cat = target_cat_cb.get()
-            tn = target_type_cb.get()
-
-            target_id_cb.set("")
-            target_comp_cb.set("")
-            target_comp_cb["values"] = []
-
-            if type_cb.get() == "place":
-                tc = tgt_candidates_place_objects()
-            else:
-                tc = tgt_candidates_transfer()
-
+            tn  = target_type_cb.get()
+            target_id_cb.set(""); target_comp_cb.set(""); target_comp_cb["values"] = []
+            tc  = tgt_candidates()
             ids = [i for (c, tname, i) in tc if c == cat and tname == tn]
             target_id_cb["values"] = ["*"] + sorted(ids, key=lambda x: int(x))
 
-            # For transfer: no component
-            if type_cb.get() != "place":
-                return
-
-            # For place: if user already has an id selected, populate receptors
-            # (otherwise we'll populate on id selection)
-            if target_id_cb.get():
-                comps = receptor_names_for_target(cat, tn, target_id_cb.get())
-                target_comp_cb["values"] = comps
-
         def update_target_components(event=None):
-            # Only for place
-            if type_cb.get() != "place":
-                return
-            cat = target_cat_cb.get()
-            tn = target_type_cb.get()
-            oid = target_id_cb.get()
-            comps = receptor_names_for_target(cat, tn, oid)
-            target_comp_cb.set("")
-            target_comp_cb["values"] = comps
+            if type_cb.get() == "move object":
+                cat  = target_cat_cb.get()
+                tn   = target_type_cb.get()
+                oid  = target_id_cb.get()
+                comps = receptor_names_for_target(cat, tn, oid)
+                target_comp_cb.set(""); target_comp_cb["values"] = comps
+                # show receptor selector only if target has receptors
+                if comps:
+                    target_comp_label.grid()
+                    target_comp_cb.grid()
+                else:
+                    target_comp_label.grid_remove()
+                    target_comp_cb.grid_remove()
+            refresh_action_options()
 
-        # -----------------------------
+        # ─────────────────────────────────────────
         # Bindings
-        # -----------------------------
+        # ─────────────────────────────────────────
         type_cb.bind("<<ComboboxSelected>>", rebuild_all)
 
         source_cat_cb.bind("<<ComboboxSelected>>", update_source_types)
         source_type_cb.bind("<<ComboboxSelected>>", update_source_ids)
+        source_id_cb.bind("<<ComboboxSelected>>",   on_source_id_selected)
 
         target_cat_cb.bind("<<ComboboxSelected>>", update_target_types)
         target_type_cb.bind("<<ComboboxSelected>>", update_target_ids)
-        target_id_cb.bind("<<ComboboxSelected>>", update_target_components)
+        target_id_cb.bind("<<ComboboxSelected>>",   update_target_components)
 
-        # -----------------------------
-        # EDIT MODE PREFILL (ORDER MATTERS)
-        # -----------------------------
+        # ─────────────────────────────────────────
+        # Edit mode prefill (order matters)
+        # ─────────────────────────────────────────
         if is_edit:
-            # must set type first, then rebuild options, then set values in order
-            type_cb.set(interaction.get("type", ""))
+            internal_type = interaction.get("type", "")
+            display_type  = DISPLAY_TYPE.get(internal_type, internal_type)
+            type_cb.set(display_type)
             rebuild_all()
 
             src = interaction["source"]
             tgt = interaction["target"]
 
-            # Source
-            source_cat_cb.set(src["category"])
-            update_source_types()
-            source_type_cb.set(src["type"])
-            update_source_ids()
+            source_cat_cb.set(src["category"]);  update_source_types()
+            source_type_cb.set(src["type"]);     update_source_ids()
             source_id_cb.set(str(src["id"]))
 
-            # Target
-            target_cat_cb.set(tgt["category"])
-            update_target_types()
-            target_type_cb.set(tgt["type"])
-            update_target_ids()
+            target_cat_cb.set(tgt["category"]);  update_target_types()
+            target_type_cb.set(tgt["type"]);     update_target_ids()
             target_id_cb.set(str(tgt["id"]))
 
-            # Target component only for place
-            if type_cb.get() == "place":
+            if display_type == "move object":
                 update_target_components()
                 if tgt.get("component"):
                     target_comp_cb.set(tgt["component"])
 
-        else:
-            # No default selection
-            type_cb.set("")
-            clear_source()
-            clear_target()
-            refresh_visibility()
+            # Restore saved action from whichever endpoint carries one.
+            # Instrument actions are stored as "comp_norm.verb" → reconstruct UI label "verb comp display".
+            # Non-instrument object_actions are stored as plain strings (e.g. "scoop").
+            refresh_action_options()
+            saved_action = ""
+            for ep in (interaction["source"], interaction["target"]):
+                ep_action = ep.get("action", "")
+                if not ep_action:
+                    continue
+                if ep.get("category") == "instrument" and "." in ep_action:
+                    # reconstruct UI label: "comp_norm.verb" -> "verb comp display"
+                    comp_norm, verb = ep_action.rsplit(".", 1)
+                    comp_display = comp_norm.replace("_", " ")
+                    saved_action = f"{verb} {comp_display}"
+                else:
+                    # plain object action — use as-is
+                    saved_action = ep_action
+                break
+            if not saved_action:
+                saved_action = DEFAULT_ACTION.get(display_type, "")
+            if saved_action not in action_cb["values"]:
+                opts = list(action_cb["values"]) + [saved_action]
+                action_cb["values"] = opts
+            action_cb.set(saved_action)
 
-        # -----------------------------
+        else:
+            type_cb.set("")
+            clear_source(); clear_target()
+            refresh_visibility()
+            action_cb["values"] = []
+            action_cb.set("")
+
+        # ─────────────────────────────────────────
         # Confirm
-        # -----------------------------
+        # ─────────────────────────────────────────
         def confirm():
-            t = type_cb.get()
-            if not t:
-                messagebox.showerror("Error", "Select interaction type.")
+            display_t      = type_cb.get()
+            if not display_t:
+                messagebox.showerror("Error", "Select an interaction type.")
                 return
 
+            internal_t     = INTERNAL_TYPE[display_t]
+            full_action    = action_cb.get()
+            default_action = DEFAULT_ACTION.get(display_t, "")
+
             if not source_cat_cb.get() or not source_type_cb.get() or not source_id_cb.get():
-                messagebox.showerror("Error", "Select source (category/type/id).")
+                messagebox.showerror("Error", "Select source (category / type / id).")
                 return
 
             if not target_cat_cb.get() or not target_type_cb.get() or not target_id_cb.get():
-                messagebox.showerror("Error", "Select target (category/type/id).")
+                messagebox.showerror("Error", "Select target (category / type / id).")
                 return
 
-            # place requires receptor component
-            if t == "place":
-                if not target_comp_cb.get():
-                    messagebox.showerror("Error", "Place requires a target receptor component.")
+            if display_t == "move object":
+                comps = receptor_names_for_target(
+                    target_cat_cb.get(), target_type_cb.get(), target_id_cb.get())
+                if comps and not target_comp_cb.get():
+                    messagebox.showerror("Error", "Move object requires a target receptor component.")
                     return
 
-            new_interaction = {
-                "id": interaction_id if is_edit else len(interactions),
-                "type": t,
-                "source": {
-                    "category": source_cat_cb.get(),
-                    "type": source_type_cb.get(),
-                    "id": source_id_cb.get(),
+            def make_endpoint(cat, type_name, id_str, is_place_target=False):
+                """
+                Build a source/target dict.
+                - id kept as "*" or converted to int.
+                - For the move-object target the component comes from the receptor selector.
+                - For instrument endpoints whose full_action is one of their component
+                  actions, decompose into component + action fields on the endpoint itself.
+                """
+                obj_id   = id_str  # keep as "*" or original string
+                endpoint = {
+                    "category":  cat,
+                    "type":      type_name,
+                    "id":        obj_id,
                     "component": None
-                },
-                "target": {
-                    "category": target_cat_cb.get(),
-                    "type": target_type_cb.get(),
-                    "id": target_id_cb.get(),
-                    "component": target_comp_cb.get() if t == "place" else None
                 }
+
+                if is_place_target:
+                    endpoint["component"] = target_comp_cb.get() or None
+                    return endpoint  # component is None for container targets (no receptor)
+
+                if full_action != default_action and full_action in get_object_actions(cat, type_name, id_str):
+                    if cat == "instrument":
+                        # instrument actions are "verb comp_name" -> store as "comp_norm.verb"
+                        parts = full_action.split(" ", 1)
+                        if len(parts) == 2:
+                            verb, comp_name = parts[0], parts[1]
+                            comp_norm = comp_name.replace(" ", "_")
+                            endpoint["action"] = f"{comp_norm}.{verb}"
+                    else:
+                        # non-instrument object_actions are plain strings (e.g. "scoop", "pour")
+                        endpoint["action"] = full_action
+
+                return endpoint
+
+            new_interaction = {
+                "id":     interaction_id if is_edit else len(interactions),
+                "type":   internal_t,
+                "source": make_endpoint(
+                    source_cat_cb.get(), source_type_cb.get(), source_id_cb.get()
+                ),
+                "target": make_endpoint(
+                    target_cat_cb.get(), target_type_cb.get(), target_id_cb.get(),
+                    is_place_target=(display_t == "move object")
+                )
             }
 
             if is_edit:
@@ -1659,13 +1762,19 @@ class LabInventoryApp(tk.Tk):
             src = inter["source"]
             tgt = inter["target"]
 
-            def format_entity(e):
-                base = f"{e['category']}:{e['type']}[{e['id']}]"
-                if e.get("component"):
-                    base += f".{e['component']}"
-                return base
+            # Derive action label from whichever endpoint carries one,
+            # falling back to the bare interaction type.
+            action_label = inter.get("type", "")
+            for ep in (src, tgt):
+                ep_action = ep.get("action", "")
+                if ep_action:
+                    action_label = ep_action
+                    break
 
-            label = f"{format_entity(src)} --{inter['type']}--> {format_entity(tgt)}"
+            def fmt_ep(e):
+                return f"{e['category']}:{e['type']}[{e['id']}]"
+
+            label = f"{fmt_ep(src)} -- {action_label} -> {fmt_ep(tgt)}"
 
             self.tree.insert(
                 interactions_root,
@@ -1720,6 +1829,32 @@ class LabInventoryApp(tk.Tk):
 
         def norm(x):
             return x.replace(" ", "_").lower() if isinstance(x, str) else x
+
+        def interaction_action(inter, is_source):
+            """
+            Return the action name for this interaction:
+            - Short name when the owning endpoint IS the current object
+              e.g. "draw_trigger_button.press" or "scoop"
+            - Fully qualified when the owning endpoint is a DIFFERENT object
+              e.g. "instrument:electronic_pipette[0].draw_trigger_button.press"
+              or   "tool:spoon[*].scoop"
+            - Falls back to the bare interaction type if no action is found.
+            """
+            for ep in (inter["source"], inter["target"]):
+                ep_action = ep.get("action", "")
+                if not ep_action:
+                    continue
+                owner_is_self = (
+                    ep["category"] == cat and
+                    ep["type"] == type_name and
+                    ep.get("id") in (str(obj_id), "*")
+                )
+                if owner_is_self:
+                    return ep_action  # short name (dotted or plain)
+                else:
+                    prefix = f"{ep['category']}:{norm(ep['type'])}[{ep['id']}]"
+                    return f"{prefix}.{ep_action}"  # fully qualified
+            return inter.get("type", "transfer")
 
         obj = inventory[cat][type_name][obj_id]
 
@@ -2145,7 +2280,7 @@ class LabInventoryApp(tk.Tk):
                     obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
 
                 action_entry = {
-                    "name": "place",
+                    "name": interaction_action(inter, is_source=False),
                     "type": "interaction",
                     "parameters": {
                         "object": obj_label,
@@ -2213,7 +2348,7 @@ class LabInventoryApp(tk.Tk):
                         }
 
                         action_entry = {
-                            "name": "transfer",
+                            "name": interaction_action(inter, is_source=False),
                             "type": "interaction",
                             "parameters": params
                         }
@@ -2269,7 +2404,7 @@ class LabInventoryApp(tk.Tk):
                         }
 
                         action_entry = {
-                            "name": "transfer",
+                            "name": interaction_action(inter, is_source=True),
                             "type": "interaction",
                             "parameters": params
                         }
@@ -2325,7 +2460,7 @@ class LabInventoryApp(tk.Tk):
                                     final_target_label = f"{next_tgt['category']}:{norm(next_tgt['type'])}[{next_tgt['id']}]"
 
                                 action_entry = {
-                                    "name": "transfer",
+                                    "name": interaction_action(inter_next, is_source=False),
                                     "type": "interaction",
                                     "parameters": {
                                         "material": mediated_material,
@@ -2335,6 +2470,23 @@ class LabInventoryApp(tk.Tk):
 
                                 if action_entry not in template["actions"]:
                                     template["actions"].append(action_entry)
+
+        # -------------------------------------------------
+        # 4️⃣ DEDUPLICATION: drop control entries whose short name matches
+        #    the trailing component.action of an interaction entry.
+        # -------------------------------------------------
+        interaction_short_names = set()
+        for a in template["actions"]:
+            if a["type"] == "interaction":
+                # extract trailing "comp.verb" from fully-qualified or bare name
+                parts = a["name"].split(".")
+                if len(parts) >= 2:
+                    interaction_short_names.add(f"{parts[-2]}.{parts[-1]}")
+
+        template["actions"] = [
+            a for a in template["actions"]
+            if not (a["type"] == "control" and a["name"] in interaction_short_names)
+        ]
 
         return template
 
