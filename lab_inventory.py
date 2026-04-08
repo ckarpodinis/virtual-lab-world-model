@@ -301,6 +301,52 @@ class LabInventoryApp(tk.Tk):
         cat_cb.bind("<<ComboboxSelected>>", update_material_visibility)
 
         # -----------------------------
+        # Related Objects (all non-material categories)
+        # -----------------------------
+        related_objects_label = ttk.Label(win, text="Related Objects")
+        related_objects_frame = ttk.Frame(win)
+
+        ro_scrollbar = ttk.Scrollbar(related_objects_frame)
+        ro_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        related_objects_lb = tk.Listbox(
+            related_objects_frame,
+            selectmode=tk.MULTIPLE,
+            height=5,
+            width=35,
+            yscrollcommand=ro_scrollbar.set
+        )
+        related_objects_lb.pack(side=tk.LEFT, fill=tk.BOTH)
+        ro_scrollbar.config(command=related_objects_lb.yview)
+
+        # Build list of all objects except self — populated dynamically
+        all_objects_list = []  # (cat, type, id_str)
+
+        def populate_related_objects(current_cat, current_type, current_id):
+            related_objects_lb.delete(0, tk.END)
+            all_objects_list.clear()
+            for c in inventory:
+                if c == "material":
+                    continue
+                for tname in inventory[c]:
+                    for titem in inventory[c][tname]:
+                        # exclude self
+                        if c == current_cat and tname == current_type and str(titem["id"]) == str(current_id):
+                            continue
+                        all_objects_list.append((c, tname, str(titem["id"])))
+                        related_objects_lb.insert(tk.END, f"{c}:{tname}[{titem['id']}]")
+
+        def update_related_objects_visibility(event=None):
+            if cat_cb.get() and cat_cb.get() != "material":
+                related_objects_label.grid(row=row, column=0, sticky="nw", padx=5, pady=5)
+                related_objects_frame.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            else:
+                related_objects_label.grid_remove()
+                related_objects_frame.grid_remove()
+                related_objects_lb.selection_clear(0, tk.END)
+
+        cat_cb.bind("<<ComboboxSelected>>", lambda e: (update_material_visibility(e), update_related_objects_visibility(e)))
+
+        # -----------------------------
         # Edit Mode Prefill
         # -----------------------------
         if is_edit:
@@ -323,7 +369,19 @@ class LabInventoryApp(tk.Tk):
                 if contains:
                     material_entry.insert(0, contains.get("type_name", ""))
 
+            # Prefill related objects
+            if cat != "material":
+                populate_related_objects(cat, type_name, idx)
+                existing_ro = item.get("related_objects", [])
+                for i, (rc, rtn, rid) in enumerate(all_objects_list):
+                    for ro in existing_ro:
+                        if ro["category"] == rc and ro["type"] == rtn and str(ro.get("id", "*")) in (rid, "*"):
+                            related_objects_lb.select_set(i)
+        else:
+            populate_related_objects(None, None, None)
+
         update_material_visibility()
+        update_related_objects_visibility()
         row += 1
 
         # -----------------------------
@@ -403,6 +461,14 @@ class LabInventoryApp(tk.Tk):
                     else:
                         item.pop("contains", None)
 
+                if category != "material":
+                    sel_ro = [all_objects_list[i] for i in related_objects_lb.curselection()]
+                    item["related_objects"] = [
+                        {"category": c, "type": t, "id": i} for (c, t, i) in sel_ro
+                    ]
+                else:
+                    item.pop("related_objects", None)
+
             # -------------------------
             # ADD MODE
             # -------------------------
@@ -439,6 +505,12 @@ class LabInventoryApp(tk.Tk):
                         "entity_type": "material",
                         "type_name": material_name
                     }
+
+                if category != "material":
+                    sel_ro = [all_objects_list[i] for i in related_objects_lb.curselection()]
+                    new_item["related_objects"] = [
+                        {"category": c, "type": t, "id": i} for (c, t, i) in sel_ro
+                    ]
 
                 inventory[category][new_type].append(new_item)
 
@@ -1830,6 +1902,10 @@ class LabInventoryApp(tk.Tk):
         def norm(x):
             return x.replace(" ", "_").lower() if isinstance(x, str) else x
 
+        def flat(cat_, type_):
+            """Flat object label with no id suffix (no [*] or [0] etc.)."""
+            return f"{cat_}:{norm(type_)}"
+
         def interaction_action(inter, is_source):
             """
             Return the action name for this interaction:
@@ -1852,7 +1928,9 @@ class LabInventoryApp(tk.Tk):
                 if owner_is_self:
                     return ep_action  # short name (dotted or plain)
                 else:
-                    prefix = f"{ep['category']}:{norm(ep['type'])}[{ep['id']}]"
+                    ep_id = ep["id"]
+                    id_suffix = "" if ep_id == "*" else f"[{ep_id}]"
+                    prefix = f"{ep['category']}:{norm(ep['type'])}{id_suffix}"
                     return f"{prefix}.{ep_action}"  # fully qualified
             return inter.get("type", "transfer")
 
@@ -2056,13 +2134,25 @@ class LabInventoryApp(tk.Tk):
                     if src2["category"] != other_cat or src2["type"] != other_type:
                         continue
 
-                    # current object must be the target
-                    if not (tgt2["category"] == cat and tgt2["type"] == type_name and
-                            tgt2.get("id") in (str(obj_id), "*")):
+                    # For normal interacted states: current object must be the target.
+                    # For related objects: include ALL place interactions for this object.
+                    is_related = any(
+                        ro["category"] == other_cat and ro["type"] == other_type
+                        for ro in obj.get("related_objects", [])
+                    )
+                    target_is_self = (
+                        tgt2["category"] == cat and tgt2["type"] == type_name and
+                        tgt2.get("id") in (str(obj_id), "*")
+                    )
+                    if not (target_is_self or is_related):
                         continue
 
                     receptor = norm(tgt2["component"]) if tgt2.get("component") else None
-                    loc = f"{cat}:{norm(type_name)}[{obj_id}]"
+                    tgt2_id = tgt2.get("id", "*")
+                    if tgt2_id == "*":
+                        loc = f"{tgt2['category']}:{norm(tgt2['type'])}"
+                    else:
+                        loc = f"{tgt2['category']}:{norm(tgt2['type'])}[{tgt2_id}]"
                     if receptor:
                         loc += f":{receptor}"
                     values.append(loc)
@@ -2211,6 +2301,60 @@ class LabInventoryApp(tk.Tk):
                         final = inter2["target"]
                         add_interacted_states(final["category"], final["type"], final["id"])
         
+        # -------------------------------------------------
+        # 1c️⃣ RELATED OBJECTS STATES & ACTIONS
+        # -------------------------------------------------
+        for ro in obj.get("related_objects", []):
+            # Use flat label (no id) for related objects
+            _ro_id_orig = ro["id"]
+            ro_for_states = dict(ro)
+            ro_for_states["id"] = "*"  # force flat label path in add_interacted_states
+            add_interacted_states(ro_for_states["category"], ro_for_states["type"], ro_for_states["id"])
+
+            # Flat label — no id suffix
+            ro_label = f"{ro['category']}:{norm(ro['type'])}"
+
+            # Find ALL interactions where this related object is the source
+            ro_interactions = []
+            for inter in interactions:
+                src2 = inter["source"]
+                if src2["category"] == ro["category"] and src2["type"] == ro["type"]:
+                    ro_interactions.append(inter)
+
+            if ro_interactions:
+                for ro_inter in ro_interactions:
+                    tgt2      = ro_inter["target"]
+                    # Flat target label — no id suffix
+                    tgt_label = f"{tgt2['category']}:{norm(tgt2['type'])}"
+                    receptor  = norm(tgt2["component"]) if tgt2.get("component") else None
+
+                    action_name = interaction_action(ro_inter, is_source=True)
+
+                    if ro_inter["type"] == "place":
+                        # target is the destination object, receptor as sub-key if present
+                        params = {"object": ro_label, "target": tgt_label}
+                        if receptor:
+                            params["receptor"] = receptor
+                    else:
+                        params = {"object": ro_label, "target_object": tgt_label}
+
+                    action_entry = {
+                        "name": action_name,
+                        "type": "interaction",
+                        "parameters": params
+                    }
+                    if action_entry not in template["actions"]:
+                        template["actions"].append(action_entry)
+            else:
+                # no interaction defined — emit a generic place action
+                action_entry = {
+                    "name": "place",
+                    "type": "interaction",
+                    "parameters": {"object": ro_label, "target": None}
+                }
+                if action_entry not in template["actions"]:
+                    template["actions"].append(action_entry)
+
         # remove unresolved domain states, quantity states, and material states for containers
         def should_keep(s):
             if "domain" in s:

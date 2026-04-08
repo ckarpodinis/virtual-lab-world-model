@@ -50,7 +50,8 @@
             }
           ],
           "object_actions": [],
-          "states": {}
+          "states": {},
+          "related_objects": []
         }
       ],
       "magnetic stirrer": [
@@ -99,7 +100,19 @@
             }
           ],
           "object_actions": [],
-          "states": {}
+          "states": {},
+          "related_objects": [
+            {
+              "category": "tool",
+              "type": "magnetic stir bar",
+              "id": "0"
+            },
+            {
+              "category": "tool",
+              "type": "magnetic stick",
+              "id": "0"
+            }
+          ]
         }
       ],
       "electronic pipette": [
@@ -152,7 +165,8 @@
               "kind": "enum",
               "domain": "materials"
             }
-          }
+          },
+          "related_objects": []
         }
       ]
     },
