@@ -35,8 +35,9 @@ args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
 EPSILON           = args.epsilon
-INVALID_THRESHOLD = VALID_THRESHOLD - EPSILON
+INVALID_THRESHOLD = 1 - VALID_THRESHOLD
 CONF_THRESHOLD     = args.conf_threshold
+INVALID_CONF_THRESHOLD = args.conf_threshold
 
 # ── 1. Parse the world model JSON ─────────────────────────────────────────────
 def parse_world_model(path):
@@ -83,12 +84,12 @@ for action in sorted(by_action):
     state_keys = sorted(entries_a[0]["state"].keys())
 
     print(f"\nAction: '{action}'")
-    header = "  " + "  ".join(f"{k:<22}" for k in state_keys) + f"  {'reward':<8}  label"
+    header = "  " + "  ".join(f"{k:<52}" for k in state_keys) + f"  {'reward':<8}  label"
     print(header)
     print("  " + "-" * (len(header) - 2))
 
     for e in sorted(entries_a, key=lambda x: str(x["state"])):
-        vals      = "  ".join(f"{str(e['state'][k]):<22}" for k in state_keys)
+        vals      = "  ".join(f"{str(e['state'][k]):<52}" for k in state_keys)
         label_sym = {"VALID": "✓", "INVALID": "✗", "AMBIGUOUS": "?"}[e["label"]]
         print(f"  {vals}  {e['expected_reward']:<8.3f}  {label_sym} {e['label']}")
 
@@ -107,8 +108,12 @@ def extract_rules(entries_a):
       NEUTRAL    — everything else (multi-valued features like quantity, or values
                    that appear in both valid and invalid entries).
     """
+    
+    VALID_ABSENCE_THRESHOLD = 0.05
+
     valid   = [e for e in entries_a if e["label"] == "VALID"]
     invalid = [e for e in entries_a if e["label"] == "INVALID"]
+    ambiguous = [e for e in entries_a if e["label"] == "AMBIGUOUS"]
 
     if not valid and not invalid:
         return {"note": "all entries ambiguous, no clean rules extractable"}
@@ -134,17 +139,70 @@ def extract_rules(entries_a):
             return {}
         return {val: w / total_weight for val, w in weighted_counts.items()}
 
+    from itertools import combinations
+
+    causal_score = defaultdict(lambda: defaultdict(int))
+
+    for e1, e2 in combinations(entries_a, 2):
+
+        diffs = [
+            k for k in e1["state"]
+            if e1["state"][k] != e2["state"][k]
+        ]
+
+        if len(diffs) != 1:
+            continue
+
+        k = diffs[0]
+        v1 = e1["state"][k]
+        v2 = e2["state"][k]
+
+        if e1["label"] == "VALID" and e2["label"] == "INVALID":
+            causal_score[k][v2] += 1
+            causal_score[k][v1] -= 1
+
+        elif e2["label"] == "VALID" and e1["label"] == "INVALID":
+            causal_score[k][v1] += 1
+            causal_score[k][v2] -= 1
+
     rules = {}
     for key in state_keys:
         conf_map = weighted_conf(valid, key)
+        invalid_conf_map = weighted_conf(invalid, key)
+        
+        ambiguous_vals = set(e["state"][key] for e in ambiguous)
         invalid_vals = set(e["state"][key] for e in invalid)
         all_vals     = set(e["state"][key] for e in entries_a)
 
         result = {}
+#        for val in sorted(all_vals, key=str):
+#            vc = conf_map.get(val, 0.0)
+#            cs = causal_score[key].get(val, 0)
+#
+#            if (
+#                vc <= VALID_ABSENCE_THRESHOLD   # not seen in valid
+#                and cs > 0                      # causes invalid
+#                ):
+#                result[val] = "FORBIDDEN"
+#            else:
+#                result[val] = "NEUTRAL"
+        
         for val in sorted(all_vals, key=str):
-            c = conf_map.get(val, 0.0)
-            if c == 0.0 and val in invalid_vals:
-                result[val] = "FORBIDDEN"   # never in valid, only when invalids exist
+            vc = conf_map.get(val, 0.0)
+            ic = invalid_conf_map.get(val, 0.0)
+            cs = causal_score[key].get(val, 0)
+
+            if vc <= VALID_ABSENCE_THRESHOLD:
+
+                if cs > 0:
+                    result[val] = "FORBIDDEN"   # causal
+
+                elif ic >= INVALID_CONF_THRESHOLD:
+                    result[val] = "FORBIDDEN"   # fallback if not causal
+
+                else:
+                    result[val] = "NEUTRAL"
+
             else:
                 result[val] = "NEUTRAL"
 
@@ -201,11 +259,10 @@ def extract_probabilistic_preconditions(entries_a):
     return result
 
 def extract_probabilistic_preconditions_weighted(entries_a):
-    valid = [e for e in entries_a if e["label"] == "VALID"]
 
-    if not valid:
-        return {"note": "no valid entries"}
-
+    if not entries_a:
+        return {}
+    
     state_keys = sorted(entries_a[0]["state"].keys())
     result = {}
 
@@ -213,7 +270,7 @@ def extract_probabilistic_preconditions_weighted(entries_a):
         weighted_counts = {}
         total_weight = 0
 
-        for e in valid:
+        for e in entries_a:
             val = e["state"][key]
 
             weight = sum(t["count"] for t in e.get("transitions", []))
@@ -267,12 +324,15 @@ print("=" * 70)
 
 for action in sorted(by_action):
     entries_a  = by_action[action]
+    valid      = [e for e in entries_a if e["label"] == "VALID"]
     ambig      = [e for e in entries_a if e["label"] == "AMBIGUOUS"]
     invalid    = [e for e in entries_a if e["label"] == "INVALID"]
     state_keys = sorted(entries_a[0]["state"].keys())
+    
     rules      = extract_rules(entries_a)
-#    prob_unweighted = extract_probabilistic_preconditions(entries_a)
-    prob_weighted   = extract_probabilistic_preconditions_weighted(entries_a)
+    
+    valid_prob_weighted   = extract_probabilistic_preconditions_weighted(valid)
+    invalid_prob_weighted = extract_probabilistic_preconditions_weighted(invalid)
 
     print(f"\nAction: '{action}'")
 
@@ -316,16 +376,24 @@ for action in sorted(by_action):
 #                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
 #                )
 #            print("    " + " ; ".join(vals))
-    if "note" not in prob_weighted:
-        print(f"  ~ PROBABILISTIC (experience-weighted):")
-        for key, items in prob_weighted.items():
-            vals = []
-            for item in items:
-                vals.append(
-                    f"{key}={repr(item['value'])} "
-                    f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
-                )
-            print("    " + " ; ".join(vals))
+    print(f"  ~ PROBABILISTIC for VALID (experience-weighted):")
+    for key, items in valid_prob_weighted.items():
+        vals = []
+        for item in items:
+            vals.append(
+                f"{key}={repr(item['value'])} "
+                f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
+            )
+        print("    " + " ; ".join(vals))
+    print(f"  ~ PROBABILISTIC for INVALID (experience-weighted):")
+    for key, items in invalid_prob_weighted.items():
+        vals = []
+        for item in items:
+            vals.append(
+                f"{key}={repr(item['value'])} "
+                f"(conf={item['confidence']:.2f}, {item['count']}/{item['total']})"
+            )
+        print("    " + " ; ".join(vals))
 
 # ── 6. Precedence rules ───────────────────────────────────────────────────────
 # Reuses SUMMARY OF RULES results directly:
