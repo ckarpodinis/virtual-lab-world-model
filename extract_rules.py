@@ -75,21 +75,22 @@ for e in entries:
     by_action[e["action"]].append(e)
 
 # ── 3. Validity table ─────────────────────────────────────────────────────────
+def short(val):
+    s = str(val)
+    return s.rsplit(":", 1)[-1] if ":" in s else s
+
 print("=" * 70)
 print(f"VALIDITY TABLE  (VALID >= {VALID_THRESHOLD}, AMBIGUOUS >= {INVALID_THRESHOLD:.2f}, INVALID < {INVALID_THRESHOLD:.2f})")
 print("=" * 70)
-
 for action in sorted(by_action):
     entries_a  = by_action[action]
     state_keys = sorted(entries_a[0]["state"].keys())
-
     print(f"\nAction: '{action}'")
-    header = "  " + "  ".join(f"{k:<52}" for k in state_keys) + f"  {'reward':<8}  label"
+    header = "  " + "  ".join(f"{short(k):<30}" for k in state_keys) + f"  {'reward':<8}  label"
     print(header)
     print("  " + "-" * (len(header) - 2))
-
     for e in sorted(entries_a, key=lambda x: str(x["state"])):
-        vals      = "  ".join(f"{str(e['state'][k]):<52}" for k in state_keys)
+        vals      = "  ".join(f"{short(e['state'][k]):<30}" for k in state_keys)
         label_sym = {"VALID": "✓", "INVALID": "✗", "AMBIGUOUS": "?"}[e["label"]]
         print(f"  {vals}  {e['expected_reward']:<8.3f}  {label_sym} {e['label']}")
 
