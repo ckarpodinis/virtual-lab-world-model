@@ -21,7 +21,7 @@ from collections import defaultdict, Counter
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("input_file", help="Path to world model JSON file")
+parser.add_argument("input", help="Path to world model JSON file")
 parser.add_argument("--threshold", type=float, default=0.7,
                     help="Reward threshold above which an action is considered VALID (default: 0.7)")
 parser.add_argument("--template", help="Path to MDP template JSON (enables JSON rule export)")
@@ -31,6 +31,7 @@ parser.add_argument("--print-json", action="store_true",
                     help="Export rules to JSON file")
 parser.add_argument("--conf-threshold", type=float, default=0.9,
                     help="Min weighted confidence for NECESSARY, max for FORBIDDEN (default: 0.9)")
+parser.add_argument("-o", "--output", default=None, help="Output JSON file")
 args = parser.parse_args()
 
 VALID_THRESHOLD   = args.threshold
@@ -55,7 +56,7 @@ def parse_world_model(path):
         })
     return entries
 
-entries = parse_world_model(args.input_file)
+entries = parse_world_model(args.input)
 print(f"Parsed {len(entries)} (state, action) entries\n")
 
 # ── 2. Classify each entry ────────────────────────────────────────────────────
@@ -296,27 +297,62 @@ print("\n" + "=" * 70)
 print("EXTRACTED PRECONDITION RULES")
 print("=" * 70)
 
+structured_rules = []
+
 for action in sorted(by_action):
     entries_a = by_action[action]
     rules     = extract_rules(entries_a)
 
     print(f"\nAction: '{action}'")
 
+    action_block = {
+        "action": action,
+        "preconditions": []
+    }
+
     if "note" in rules:
         print(f"  → {rules['note']}")
+        action_block["note"] = rules["note"]
+        structured_rules.append(action_block)
         continue
 
     printed = False
+
     for key, val_map in rules.items():
         for val, role in sorted(val_map.items(), key=lambda x: (x[1], str(x[0]))):
             if role == "NEUTRAL":
                 continue
-            sym = {"NECESSARY": "⚠ NECESSARY", "FORBIDDEN": "✗ FORBIDDEN"}[role]
+
+            sym = {
+                "NECESSARY": "⚠ NECESSARY",
+                "FORBIDDEN": "✗ FORBIDDEN"
+            }[role]
+
             print(f"  {sym:<16}  {key} = {repr(val)}")
             printed = True
+
+            # ✅ ADD STRUCTURED ENTRY
+            action_block["preconditions"].append({
+                "type": role,
+                "variable": key,
+                "value": val
+            })
+
     if not printed:
         print("  → No single-feature NECESSARY or FORBIDDEN values found")
         print("    All features are NEUTRAL — validity depends on feature combinations")
+
+    structured_rules.append(action_block)
+
+if args.output:
+    output_path = args.output
+else:
+    output_path = args.input.replace(".json", "_preconditions.json")
+
+with open(output_path, "w") as f:
+    json.dump({"actions": structured_rules}, f, indent=2)
+
+print(f"\nSaved structured preconditions to {output_path}")
 
 # ── 5. Summary ────────────────────────────────────────────────────────────────
 print("\n" + "=" * 70)
@@ -589,7 +625,7 @@ if args.template:
         })
         rule_id += 1
 
-    out_path = args.input_file.replace(".json", "_rules.json")
+    out_path = args.input.replace(".json", "_rules.json")
     with open(out_path, "w") as f:
         json.dump(output_rules, f, indent=2)
     print(f"\nRules exported to: {out_path}")
