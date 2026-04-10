@@ -117,6 +117,30 @@ Examples of INVALID transitions may include:
 Even INVALID transitions must still respect the state variable domains
 defined in the template.
 
+ACTION SEMANTICS
+----------------
+Actions of type "interaction" have a subtype that defines their meaning:
+
+1. PLACE interactions:
+   - format: place(object=X, target=Y)
+   - effect: the location of object X changes to Y
+
+2. TRANSFER interactions:
+   - format: (material=M, source_object=A, target_object=B)
+   - effect: material M moves from A to B
+   - typically:
+     - source_object loses the material
+     - target_object gains the material
+
+STATE VALUE CONVENTIONS
+-----------------------
+Some state values encode structured meaning:
+
+- values starting with "location:" represent physical location
+- values starting with "material:" represent materials
+
+You should interpret these semantically when generating transitions.
+
 TRANSITION GENERATION
 ---------------------
 For each transition follow two steps.

@@ -47,14 +47,26 @@ python build_world_model.py scale_mdps.jsonl -o scale_world_model.json
 
 ---
 
-### 4. Extract rules
+### 4. Extract preconditions
 
 ```bash
-python extract_rules.py scale_world_model.json --threshold 0.7
+python extract_preconditions.py scale_world_model.json --threshold 0.7 -o scale_preconditions.json
 ```
 
 | Argument | Description |
 |---|---|
 | `scale_world_model.json` | Input world model |
 | `--threshold 0.7` | Reward threshold — actions with expected reward `>= threshold` are considered valid (default: `0.7`) |
+| `-o scale_preconditions.json` | Output preconditions |
 
+### 5. Extract causal rules
+
+```bash
+python extract_causal_rules.py scale_mdp_template.json scale_preconditions.json -o scale_rules.json
+```
+
+| Argument | Description |
+|---|---|
+| `scale_mdp_template.json` | Input MDP template |
+| `scale_preconditions.json` | Input preconditions |
+| `-o scale_rules.json` | Output rules |

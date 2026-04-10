@@ -81,12 +81,8 @@
               "states": {
                 "kind": "enum",
                 "values": [
-                  "0",
-                  "1",
-                  "2",
-                  "3",
-                  "4",
-                  "5"
+                  "zero",
+                  "nonzero"
                 ]
               }
             },
@@ -365,13 +361,16 @@
         {
           "id": 0,
           "components": [],
-          "object_actions": [],
+          "object_actions": [
+            "insert"
+          ],
           "states": {
             "location": {
               "kind": "enum",
               "domain": "locations"
             }
-          }
+          },
+          "related_objects": []
         }
       ],
       "magnetic stick": [
@@ -379,14 +378,15 @@
           "id": 0,
           "components": [],
           "object_actions": [
-            "pick stir bar"
+            "retrieve stir bar"
           ],
           "states": {
             "location": {
               "kind": "enum",
               "domain": "locations"
             }
-          }
+          },
+          "related_objects": []
         }
       ]
     },
@@ -467,7 +467,8 @@
         "category": "tool",
         "type": "magnetic stir bar",
         "id": "*",
-        "component": null
+        "component": null,
+        "action": "insert"
       },
       "target": {
         "category": "tool",
@@ -552,7 +553,7 @@
         "type": "magnetic stick",
         "id": "*",
         "component": null,
-        "action": "pick stir bar"
+        "action": "retrieve stir bar"
       },
       "target": {
         "category": "tool",

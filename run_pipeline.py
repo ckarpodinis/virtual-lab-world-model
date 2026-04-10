@@ -15,7 +15,8 @@ Usage:
 Steps (per template found in --templates-dir):
     1. mdp_generator.py  <template>  -n <N>  -o <stem>_mdps.jsonl
     2. build_world_model.py  <stem>_mdps.jsonl  -o <stem>_world_model.json
-    3. extract_rules.py  <stem>_world_model.json  --threshold <T>
+    3. extract_preconditions.py  <stem>_world_model.json  --threshold <T> -o <stem>_preconditions.json
+    3. extract_causal_rules.py  <template> <stem>_preconditions.json -o <stem>_rules.json
 """
 
 import argparse
@@ -60,6 +61,8 @@ def pipeline_for_template(
 
     mdps_file = out_dir / f"{stem}_mdps.jsonl"
     world_model_file = out_dir / f"{stem}_world_model.json"
+    preconditions_file = out_dir / f"{stem}_preconditions.json"
+    rules_file = out_dir / f"{stem}_rules.json"
 
     print(f"\n{'═' * 60}")
     print(f"  Template : {template}")
@@ -88,14 +91,26 @@ def pipeline_for_template(
         step_name=f"Build world model → {world_model_file.name}",
     )
 
-    # Step 4 — extract rules
+    # Step 4 — extract preconditions
     run(
         [
-            sys.executable, "extract_rules.py",
+            sys.executable, "extract_preconditions.py",
             str(world_model_file),
             "--threshold", str(threshold),
+            "-o", str(preconditions_file),
         ],
-        step_name=f"Extract rules (threshold={threshold})",
+        step_name=f"Extract preconditions (threshold={threshold})",
+    )
+    
+    # Step 5 — extract causal rules
+    run(
+        [
+            sys.executable, "extract_causal_rules.py",
+            str(template),
+            str(preconditions_file),
+            "-o", str(rules_file),
+        ],
+        step_name=f"Extract causal rules",
     )
 
     print(f"\n✅  Pipeline complete for '{stem}'.")

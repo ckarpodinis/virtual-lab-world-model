@@ -1926,12 +1926,12 @@ class LabInventoryApp(tk.Tk):
                     ep.get("id") in (str(obj_id), "*")
                 )
                 if owner_is_self:
-                    return ep_action  # short name (dotted or plain)
+                    return norm(ep_action)  # short name (dotted or plain)
                 else:
                     ep_id = ep["id"]
                     id_suffix = "" if ep_id == "*" else f"[{ep_id}]"
                     prefix = f"{ep['category']}:{norm(ep['type'])}{id_suffix}"
-                    return f"{prefix}.{ep_action}"  # fully qualified
+                    return f"{prefix}.{norm(ep_action)}"  # fully qualified
             return inter.get("type", "transfer")
 
         obj = inventory[cat][type_name][obj_id]
@@ -2020,7 +2020,7 @@ class LabInventoryApp(tk.Tk):
                     template["states"].append({
                         "name": norm(state_name),
                         "kind": "enum",
-                        "values": ["none"] + sorted(possible_materials)
+                        "values": ["material:none"] + sorted(possible_materials)
                     })
                 # if no materials found, skip — domain filter will drop it anyway
                 continue
@@ -2155,9 +2155,9 @@ class LabInventoryApp(tk.Tk):
                         loc = f"{tgt2['category']}:{norm(tgt2['type'])}[{tgt2_id}]"
                     if receptor:
                         loc += f":{receptor}"
-                    values.append(loc)
+                    values.append(f"location:{loc}")
 
-                return ["bench"] + sorted(set(values)) if values else None
+                return ["location:bench"] + sorted(set(values)) if values else None
 
             if other_id == "*":
                 instances = inventory[other_cat].get(other_type, [])
@@ -2341,6 +2341,7 @@ class LabInventoryApp(tk.Tk):
                     action_entry = {
                         "name": action_name,
                         "type": "interaction",
+                        **({"subtype": "place"} if ro_inter["type"] == "place" else {}),
                         "parameters": params
                     }
                     if action_entry not in template["actions"]:
@@ -2426,6 +2427,7 @@ class LabInventoryApp(tk.Tk):
                 action_entry = {
                     "name": interaction_action(inter, is_source=False),
                     "type": "interaction",
+                    "subtype": "place",
                     "parameters": {
                         "object": obj_label,
                         "target": norm(tgt["component"]) if tgt.get("component") else None
@@ -2446,7 +2448,8 @@ class LabInventoryApp(tk.Tk):
                 # CASE A: current object is TARGET
                 # ---------------------------------------------
                 if is_target:
-                    material_labels = []
+                    # Each entry: {"material": "material:...", optional "source_object": "..."}
+                    material_entries = []
 
                     # source is container
                     if src["category"] == "container":
@@ -2457,9 +2460,14 @@ class LabInventoryApp(tk.Tk):
 
                         contains = source_obj.get("contains")
                         if contains and contains.get("entity_type") == "material":
-                            material_labels.append(
-                                norm(contains['type_name'])
+                            src_label = (
+                                f"{src['category']}:{norm(src['type'])}" if src["id"] == "*"
+                                else f"{src['category']}:{norm(src['type'])}[{src['id']}]"
                             )
+                            material_entries.append({
+                                "material": f"material:{norm(contains['type_name'])}",
+                                "source_object": src_label
+                            })
 
                     # source is tool/instrument
                     elif src["category"] in ["tool", "instrument"]:
@@ -2481,19 +2489,27 @@ class LabInventoryApp(tk.Tk):
 
                                     contains = source_obj.get("contains")
                                     if contains and contains.get("entity_type") == "material":
-                                        material_labels.append(
-                                            f"{src['category']}:{norm(src['type'])}:{norm(contains['type_name'])}"
-                                        )
+                                        material_entries.append({
+                                            "material": f"material:{norm(contains['type_name'])}",
+                                            "source_object": f"{src['category']}:{norm(src['type'])}"
+                                        })
 
-                    for mat in set(material_labels):
+                    seen_entries = set()
+                    for entry in material_entries:
+                        key = tuple(sorted(entry.items()))
+                        if key in seen_entries:
+                            continue
+                        seen_entries.add(key)
+
                         params = {
-                            "material": mat,
+                            **entry,
                             "target_object": f"{cat}:{norm(type_name)}[{obj_id}]"
                         }
 
                         action_entry = {
                             "name": interaction_action(inter, is_source=False),
                             "type": "interaction",
+                            "subtype": "transfer",
                             "parameters": params
                         }
 
@@ -2514,7 +2530,7 @@ class LabInventoryApp(tk.Tk):
                     # object is container
                     contains = obj.get("contains")
                     if contains and contains.get("entity_type") == "material":
-                        base_material = norm(contains['type_name'])
+                        base_material = f"material:{norm(contains['type_name'])}"
                         material_labels.append(base_material)
 
                     # object is tool/instrument
@@ -2537,19 +2553,21 @@ class LabInventoryApp(tk.Tk):
                                 contains2 = source_obj.get("contains")
                                 if contains2 and contains2.get("entity_type") == "material":
                                     material_labels.append(
-                                        f"{cat}:{norm(type_name)}:{norm(contains2['type_name'])}"
+                                        f"material:{norm(contains2['type_name'])}"
                                     )
 
                     # direct actions for the current interaction
+                    action_on_self = bool(inter["source"].get("action"))
                     for mat in set(material_labels):
-                        params = {
-                            "material": mat,
-                            "target_object": other_label
-                        }
+                        params = {"material": mat}
+                        if action_on_self:
+                            params["source_object"] = f"{cat}:{norm(type_name)}[{obj_id}]"
+                        params["target_object"] = other_label
 
                         action_entry = {
                             "name": interaction_action(inter, is_source=True),
                             "type": "interaction",
+                            "subtype": "transfer",
                             "parameters": params
                         }
 
@@ -2582,8 +2600,6 @@ class LabInventoryApp(tk.Tk):
                             mediator_cat = mid_tgt["category"]
                             mediator_type = mid_tgt["type"]
 
-                            mediated_material = f"{mediator_cat}:{norm(mediator_type)}:{material_name}"
-
                             for inter_next in interactions:
                                 if inter_next["type"] != "transfer":
                                     continue
@@ -2606,8 +2622,10 @@ class LabInventoryApp(tk.Tk):
                                 action_entry = {
                                     "name": interaction_action(inter_next, is_source=False),
                                     "type": "interaction",
+                                    "subtype": "transfer",
                                     "parameters": {
-                                        "material": mediated_material,
+                                        "material": f"material:{material_name}",
+                                        "source_object": f"{mediator_cat}:{norm(mediator_type)}",
                                         "target_object": final_target_label
                                     }
                                 }
