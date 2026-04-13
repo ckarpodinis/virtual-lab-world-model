@@ -2155,9 +2155,9 @@ class LabInventoryApp(tk.Tk):
                         loc = f"{tgt2['category']}:{norm(tgt2['type'])}[{tgt2_id}]"
                     if receptor:
                         loc += f":{receptor}"
-                    values.append(f"location:{loc}")
+                    values.append(f"{loc}")
 
-                return ["location:bench"] + sorted(set(values)) if values else None
+                return ["bench"] + sorted(set(values)) if values else None
 
             if other_id == "*":
                 instances = inventory[other_cat].get(other_type, [])

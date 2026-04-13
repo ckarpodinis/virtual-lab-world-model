@@ -1,6 +1,10 @@
 import json
 from collections import defaultdict
 
+def normalize_value(v):
+    if isinstance(v, str) and v.startswith("location:"):
+        return v[len("location:"):]
+    return v
 
 # -------------------------------
 # Build producer map
@@ -33,12 +37,12 @@ def build_producer_map(template):
                     action_str = f"{name}(object={obj}, target={tgt})"
 
                     # object.location = target
-                    producer[(f"{obj}.location", tgt)] = action_str
+                    producer[(f"{obj}.location", normalize_value(tgt))] = action_str
 
                     # if target is also a state variable, target = object
                     state_names = {s["name"] for s in template["states"]}
                     if tgt in state_names:
-                        producer[(tgt, obj)] = action_str
+                        producer[(tgt, normalize_value(obj))] = action_str
 
             elif subtype == "transfer":
                 mat = params.get("material")
@@ -78,7 +82,7 @@ def build_rules(template, preconditions_json):
 
         for n in necessary:
             var = n["variable"]
-            val = n["value"]
+            val = normalize_value(n["value"])
 
             producer = producer_map.get((var, val))
 
