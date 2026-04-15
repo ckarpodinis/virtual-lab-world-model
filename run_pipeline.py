@@ -15,6 +15,9 @@ Usage:
     # Override log file path (default: pipeline.log in --out-dir):
     python run_pipeline.py --templates-dir templates/ -n 100 --log-file my_run.log
 
+    # Skip MDP generation (reuse existing *_mdps.jsonl files):
+    python run_pipeline.py --templates-dir templates/ -n 100 --skip-generate
+
 Steps (per template found in --templates-dir):
     1. mdp_generator.py  <template>  -n <N>  -o <stem>_mdps.jsonl
     2. build_world_model.py  <stem>_mdps.jsonl  -o <stem>_world_model.json
@@ -86,6 +89,8 @@ def pipeline_for_template(
     n: int,
     threshold: float,
     out_dir: Path,
+    templates_dir: Path,
+    skip_generate: bool,
     log: TextIOWrapper,
 ) -> None:
     """Run all pipeline steps for a single MDP template file."""
@@ -112,17 +117,24 @@ def pipeline_for_template(
     )
     tee(header, log)
 
-    # Step 1 — generate MDPs
-    run(
-        [
-            sys.executable, "-u", "mdp_generator.py",
-            str(template),
-            "-n", str(n),
-            "-o", str(mdps_file),
-        ],
-        step_name=f"Generate MDPs ({n}) → {mdps_file.name}",
-        log=log,
-    )
+    # Step 1 — generate MDPs (skipped if --skip-generate)
+    if skip_generate:
+        if not mdps_file.exists():
+            msg = f"✗  --skip-generate set but {mdps_file} not found. Aborting.\n"
+            tee(msg, log)
+            sys.exit(1)
+        tee(f"  [skip] reusing existing {mdps_file.name}\n", log)
+    else:
+        run(
+            [
+                sys.executable, "-u", "mdp_generator.py",
+                str(template),
+                "-n", str(n),
+                "-o", str(mdps_file),
+            ],
+            step_name=f"Generate MDPs ({n}) → {mdps_file.name}",
+            log=log,
+        )
 
     # Step 2 — build world model
     run(
@@ -135,27 +147,31 @@ def pipeline_for_template(
         log=log,
     )
 
-    # Step 3 — extract preconditions
+    # Step 3 — extract preconditions (--template writes "object" field to output)
     run(
         [
             sys.executable, "-u", "extract_preconditions.py",
             str(world_model_file),
             "--threshold", str(threshold),
+            "--template", str(template),
             "-o", str(preconditions_file),
         ],
         step_name=f"Extract preconditions (threshold={threshold})",
         log=log,
     )
 
-    # Step 4 — extract causal rules
+    # Step 4 — extract causal rules using all templates in the same dir.
+    # The glob pattern is passed as a single string; extract_causal_rules.py
+    # expands it internally (works on both Unix and Windows PowerShell).
+    all_templates_glob = str(templates_dir / "*_mdp_template.json")
     run(
         [
             sys.executable, "-u", "extract_causal_rules.py",
-            str(template),
+            all_templates_glob,
             str(preconditions_file),
             "-o", str(rules_file),
         ],
-        step_name="Extract causal rules",
+        step_name="Extract causal rules (all templates)",
         log=log,
     )
 
@@ -203,6 +219,12 @@ def main() -> None:
         metavar="FILE",
         help="Path to the log file (default: pipeline.log inside --out-dir).",
     )
+    parser.add_argument(
+        "--skip-generate",
+        action="store_true",
+        default=False,
+        help="Skip step 1 (mdp_generator.py) and reuse existing *_mdps.jsonl files.",
+    )
 
     args = parser.parse_args()
 
@@ -242,6 +264,8 @@ def main() -> None:
                 n=args.n,
                 threshold=args.threshold,
                 out_dir=out_dir,
+                templates_dir=templates_dir,
+                skip_generate=args.skip_generate,
                 log=log,
             )
 

@@ -34,6 +34,12 @@ parser.add_argument("--conf-threshold", type=float, default=0.9,
 parser.add_argument("-o", "--output", default=None, help="Output JSON file")
 args = parser.parse_args()
 
+# Read subject object id from template (used to label the preconditions output)
+subject_object = None
+if args.template:
+    with open(args.template) as _tf:
+        subject_object = json.load(_tf)["object"]
+
 VALID_THRESHOLD   = args.threshold
 EPSILON           = args.epsilon
 INVALID_THRESHOLD = 1 - VALID_THRESHOLD
@@ -350,7 +356,10 @@ else:
     output_path = args.input.replace(".json", "_preconditions.json")
 
 with open(output_path, "w") as f:
-    json.dump({"actions": structured_rules}, f, indent=2)
+    preconditions_out = {"actions": structured_rules}
+    if subject_object:
+        preconditions_out = {"object": subject_object, "actions": structured_rules}
+    json.dump(preconditions_out, f, indent=2)
 
 print(f"\nSaved structured preconditions to {output_path}")
 
@@ -519,118 +528,6 @@ for (action_b, feature, nec_val, action_a, strength) in sorted(
 if not any_rule:
     print("\n  No precedence rules found with current threshold.")
 print("\n")
-
-# ── 7. Export rules to JSON (only when --template is provided) ────────────────
-if args.template:
-    import re
-
-    with open(args.template) as f:
-        tmpl = json.load(f)
-
-    obj_id       = tmpl["object"]
-    action_index = {a["name"]: a for a in tmpl["actions"]}
-
-    def lookup_action(action_name):
-        """Match world-model action names (may include params) to template entries.
-        e.g. 'place(object=tool:aluminum_foil, target=weighing_platform)' -> 'place'
-        """
-        if action_name in action_index:
-            return action_index[action_name]
-        base = action_name.split("(")[0]   # strip parameters
-        return action_index.get(base, {})
-
-    # instrument id in dot notation for trigger: "instrument.electronic_scale[0]"
-    obj_dot  = obj_id.replace(":", ".")
-
-    def make_trigger(action_a):
-        tpl    = lookup_action(action_a)
-        params = tpl.get("parameters", {})
-        conds  = [{"path": "action", "equals": action_a.split("(")[0]}]
-        if tpl.get("type") == "interaction":
-            obj_param = params.get("object", "")
-            if obj_param:
-                obj_param = obj_param.replace(":", ".")
-                if "[" in obj_param:
-                    conds.append({"path": "target.id", "equals": obj_param})
-                else:
-                    conds.append({"path": "target.id", "matches": {"glob": obj_param + ".*"}})
-            target_param = params.get("target", "")
-            if target_param:
-                conds.append({"path": "to.id", "equals": obj_dot + "." + target_param})
-            else:
-                conds.append({"path": "to.id", "equals": obj_dot})
-        elif tpl.get("type") == "control":
-            base = action_a.split("(")[0]
-            parts = base.rsplit(".", 1)
-
-            if len(parts) == 2:
-                prop, act = parts
-                conds[0] = {"path": "action", "equals": act}  # replace action
-                conds.append({"path": "target.id", "equals": obj_dot + "." + prop})
-            else:
-                conds.append({"path": "target.id", "equals": obj_dot})
-
-        return {"match": {"all": conds}}
-
-    def make_requires(action_b, feature, value):
-        if action_b is None:
-            # no trusted producer — express as a state condition
-            return [{"state": feature, "value": str(value)}]
-        tpl = lookup_action(action_b)
-        if tpl.get("type") == "control":
-            base_b = action_b.split("(")[0]
-            parts = base_b.rsplit(".", 1)
-
-            if len(parts) == 2:
-                prop, act = parts
-                target_id = obj_dot + "." + prop
-            else:
-                act = action_b
-                target_id = obj_dot
-
-            return [{
-                "action": act,
-                "target": {
-                    "id": target_id
-                },
-                "value": str(value)
-            }]
-        else:
-            return [{
-                "action": action_b,
-                "target": {
-                    "id": obj_dot + "." + feature
-                },
-                "value": str(value)
-            }]
-
-    output_rules = []
-    seen_export  = set()
-    rule_id      = 1
-
-    for (action_b, feature, value, action_a) in sorted(
-            precedence_data, key=lambda x: (x[3], x[1], str(x[0]))):
-        # deduplicate on (action_b, action_a) — same producer+trigger pair
-        # regardless of which feature caused the rule
-        key = (action_b, action_a)
-        if key in seen_export:
-            continue
-        seen_export.add(key)
-        if not lookup_action(action_a):
-            continue
-        output_rules.append({
-            "id":       rule_id,
-            "trigger":  make_trigger(action_a),
-            "requires": make_requires(action_b, feature, value)
-        })
-        rule_id += 1
-
-    out_path = args.input.replace(".json", "_rules.json")
-    with open(out_path, "w") as f:
-        json.dump(output_rules, f, indent=2)
-    print(f"\nRules exported to: {out_path}")
-    if args.print_json:
-        print(json.dumps(output_rules, indent=2))
 
 # ── 8. Graphical visualization ────────────────────────────────────────────────
 if 'output_rules' in locals():
