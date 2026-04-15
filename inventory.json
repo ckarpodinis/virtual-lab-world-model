@@ -332,7 +332,8 @@
               "kind": "enum",
               "domain": "materials"
             }
-          }
+          },
+          "related_objects": []
         }
       ],
       "erlenmeyer flask": [
@@ -554,6 +555,23 @@
         "id": "*",
         "component": null,
         "action": "retrieve stir bar"
+      },
+      "target": {
+        "category": "tool",
+        "type": "erlenmeyer flask",
+        "id": "*",
+        "component": null
+      }
+    },
+    {
+      "id": 10,
+      "type": "transfer",
+      "source": {
+        "category": "tool",
+        "type": "aluminum foil",
+        "id": "*",
+        "component": null,
+        "action": "pour"
       },
       "target": {
         "category": "tool",

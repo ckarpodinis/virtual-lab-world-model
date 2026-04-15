@@ -2416,26 +2416,48 @@ class LabInventoryApp(tk.Tk):
             # 🔹 PLACE (object-based)
             # -------------------------------------------------
             if inter["type"] == "place":
-                if not is_target:
-                    continue
 
-                if src["id"] == "*":
-                    obj_label = f"{src['category']}:{norm(src['type'])}"
-                else:
-                    obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
+                # CASE A: current object is the TARGET (receives the placed object)
+                if is_target:
+                    if src["id"] == "*":
+                        obj_label = f"{src['category']}:{norm(src['type'])}"
+                    else:
+                        obj_label = f"{src['category']}:{norm(src['type'])}[{src['id']}]"
 
-                action_entry = {
-                    "name": interaction_action(inter, is_source=False),
-                    "type": "interaction",
-                    "subtype": "place",
-                    "parameters": {
-                        "object": obj_label,
-                        "target": norm(tgt["component"]) if tgt.get("component") else None
+                    action_entry = {
+                        "name": interaction_action(inter, is_source=False),
+                        "type": "interaction",
+                        "subtype": "place",
+                        "parameters": {
+                            "object": obj_label,
+                            "target": norm(tgt["component"]) if tgt.get("component") else None
+                        }
                     }
-                }
 
-                if action_entry not in template["actions"]:
-                    template["actions"].append(action_entry)
+                    if action_entry not in template["actions"]:
+                        template["actions"].append(action_entry)
+
+                # CASE B: current object is the SOURCE (is being placed somewhere)
+                else:
+                    if tgt["id"] == "*":
+                        tgt_label = f"{tgt['category']}:{norm(tgt['type'])}"
+                    else:
+                        tgt_label = f"{tgt['category']}:{norm(tgt['type'])}[{tgt['id']}]"
+
+                    receptor = norm(tgt["component"]) if tgt.get("component") else None
+
+                    action_entry = {
+                        "name": interaction_action(inter, is_source=True),
+                        "type": "interaction",
+                        "subtype": "place",
+                        "parameters": {
+                            "object": f"{cat}:{norm(type_name)}[{obj_id}]",
+                            "target": receptor if receptor else tgt_label
+                        }
+                    }
+
+                    if action_entry not in template["actions"]:
+                        template["actions"].append(action_entry)
 
                 continue
 
@@ -2533,7 +2555,7 @@ class LabInventoryApp(tk.Tk):
                         base_material = f"material:{norm(contains['type_name'])}"
                         material_labels.append(base_material)
 
-                    # object is tool/instrument
+                    # object is tool/instrument — trace inbound transfers 1 and 2 hops back
                     for inter2 in interactions:
                         if inter2["type"] != "transfer":
                             continue
@@ -2545,6 +2567,7 @@ class LabInventoryApp(tk.Tk):
                             src2 = inter2["source"]
 
                             if src2["category"] == "container":
+                                # 1-hop: container → current object
                                 if src2["id"] == "*":
                                     source_obj = inventory[src2["category"]][src2["type"]][0]
                                 else:
@@ -2555,6 +2578,27 @@ class LabInventoryApp(tk.Tk):
                                     material_labels.append(
                                         f"material:{norm(contains2['type_name'])}"
                                     )
+
+                            elif src2["category"] in ("tool", "instrument"):
+                                # 2-hop: container → mediator tool → current object
+                                for inter3 in interactions:
+                                    if inter3["type"] != "transfer":
+                                        continue
+                                    if (
+                                        inter3["target"]["category"] == src2["category"] and
+                                        inter3["target"]["type"] == src2["type"]
+                                    ):
+                                        src3 = inter3["source"]
+                                        if src3["category"] == "container":
+                                            if src3["id"] == "*":
+                                                source_obj3 = inventory[src3["category"]][src3["type"]][0]
+                                            else:
+                                                source_obj3 = inventory[src3["category"]][src3["type"]][int(src3["id"])]
+                                            contains3 = source_obj3.get("contains")
+                                            if contains3 and contains3.get("entity_type") == "material":
+                                                material_labels.append(
+                                                    f"material:{norm(contains3['type_name'])}"
+                                                )
 
                     # direct actions for the current interaction
                     action_on_self = bool(inter["source"].get("action"))
