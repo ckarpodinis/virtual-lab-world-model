@@ -92,6 +92,9 @@ def pipeline_for_template(
     templates_dir: Path,
     skip_generate: bool,
     log: TextIOWrapper,
+    provider: str = "openai",
+    model: str | None = None,
+    delta: bool = False,
 ) -> None:
     """Run all pipeline steps for a single MDP template file."""
     # Derive stem: "scale_mdp_template.json" → "scale"
@@ -125,13 +128,19 @@ def pipeline_for_template(
             sys.exit(1)
         tee(f"  [skip] reusing existing {mdps_file.name}\n", log)
     else:
+        cmd_gen = [
+            sys.executable, "-u", "mdp_generator.py",
+            str(template),
+            "-n", str(n),
+            "-o", str(mdps_file),
+            "--provider", provider,
+        ]
+        if model:
+            cmd_gen += ["--model", model]
+        if delta:
+            cmd_gen.append("--delta")
         run(
-            [
-                sys.executable, "-u", "mdp_generator.py",
-                str(template),
-                "-n", str(n),
-                "-o", str(mdps_file),
-            ],
+            cmd_gen,
             step_name=f"Generate MDPs ({n}) → {mdps_file.name}",
             log=log,
         )
@@ -225,6 +234,24 @@ def main() -> None:
         default=False,
         help="Skip step 1 (mdp_generator.py) and reuse existing *_mdps.jsonl files.",
     )
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM provider for MDP generation (default: openai).",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        metavar="MODEL",
+        help="Model name override. Defaults: openai=gpt-4o, anthropic=claude-sonnet-4-6.",
+    )
+    parser.add_argument(
+        "--delta",
+        action="store_true",
+        default=False,
+        help="Ask LLM to output only changed state variables (~40%% fewer output tokens).",
+    )
 
     args = parser.parse_args()
 
@@ -254,6 +281,9 @@ def main() -> None:
             f"Log file      : {log_path}\n"
             f"N per template: {args.n}\n"
             f"Threshold     : {args.threshold}\n"
+            f"Provider      : {args.provider}\n"
+            f"Model         : {args.model or '(default)'}\n"
+            f"Delta         : {args.delta}\n"
             f"Templates     : {[t.name for t in templates]}\n"
         )
         tee(start_msg, log)
@@ -267,6 +297,9 @@ def main() -> None:
                 templates_dir=templates_dir,
                 skip_generate=args.skip_generate,
                 log=log,
+                provider=args.provider,
+                model=args.model,
+                delta=args.delta,
             )
 
         finish_msg = (

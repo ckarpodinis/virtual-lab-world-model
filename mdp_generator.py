@@ -2,9 +2,45 @@ import uuid
 import json
 import argparse
 from itertools import product
-from openai import OpenAI
 
-client = OpenAI()
+def make_client(provider: str):
+    """Return an API client for the given provider ('openai' or 'anthropic')."""
+    if provider == "anthropic":
+        import anthropic
+        return anthropic.Anthropic()
+    else:
+        from openai import OpenAI
+        return OpenAI()
+
+
+def call_api(client, provider: str, model: str, system: str, user: str,
+             max_tokens: int = 16000, temperature: float = 0.7) -> str:
+    """Call the appropriate API and return the raw response text."""
+    if provider == "anthropic":
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=1,          # Anthropic range is 0-1
+            system=system,
+            messages=[
+                {"role": "user", "content": user}
+            ]
+        )
+        return response.content[0].text
+    else:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=max_tokens,
+            temperature=temperature,
+            user=str(uuid.uuid4())
+        )
+        return response.choices[0].message.content
+
 
 def build_valid_actions(template):
     """Build the set of canonical valid action strings from the template.
@@ -23,6 +59,100 @@ def build_valid_actions(template):
             valid.add(f"{name}({parts})")
     return valid
 
+def normalize_action(action: str) -> str:
+    """Canonical form: strip spaces around '=', sort params."""
+    import re
+    if not isinstance(action, str):
+        return action
+    action = action.strip()
+    m = re.match(r"^(.*?)\((.*)\)$", action)
+    if not m:
+        return action.replace(" ", "")
+    name, params = m.group(1), m.group(2)
+    if not params.strip():
+        return f"{name}()"
+    parts = []
+    for p in params.split(","):
+        p = p.strip()
+        if not p:
+            continue
+        if "=" in p:
+            k, v = p.split("=", 1)
+            p = f"{k.strip()}={v.strip()}"
+        parts.append(p)
+    return f"{name}({', '.join(sorted(parts))})"
+
+
+def repair_action(action: str, valid_actions: set) -> str:
+    """Map a malformed action to its canonical form where the intent is unambiguous.
+
+    Handles:
+      1. Missing key prefix: 'f(material:cuso4)' -> key was omitted entirely
+      2. Missing namespace prefix on value: 'f(material=cuso4)' where valid is
+         'f(material=material:cuso4)' — the category prefix was dropped from the value.
+
+    Does NOT repair missing parameters (ambiguous intent).
+    Returns the canonical action if repair is unambiguous, else the original.
+    """
+    import re
+
+    if action in valid_actions:
+        return action
+
+    m = re.match(r"^(.*?)\((.*)\)$", action.strip())
+    if not m:
+        return action
+
+    name = m.group(1).strip()
+    raw_params = m.group(2).strip()
+
+    # Must have parameters — we don't repair missing-param calls
+    if not raw_params:
+        return action
+
+    # Collect candidates with the same action name
+    candidates = [a for a in valid_actions if a.startswith(f"{name}(")]
+    if not candidates:
+        return action
+
+    # Parse raw parameter values, handling both '=' and ':' as separators.
+    # gpt-4o-mini sometimes uses 'key:value' instead of 'key=value'.
+    # When ':' is the separator, strip the key part (left of first ':').
+    raw_vals = []
+    for p in raw_params.split(","):
+        p = p.strip()
+        if not p:
+            continue
+        if "=" in p:
+            raw_vals.append(p.split("=", 1)[1].strip())
+        elif ":" in p:
+            # 'key:value' format — strip the key, keep the value
+            raw_vals.append(p.split(":", 1)[1].strip())
+        else:
+            raw_vals.append(p)
+
+    def values_match(raw_v, canonical_v):
+        """True if raw_v matches canonical_v exactly or is a suffix after ':'."""
+        return raw_v == canonical_v or canonical_v.endswith(f":{raw_v}")
+
+    for candidate in candidates:
+        cm = re.match(r"^(.*?)\((.*)\)$", candidate)
+        if not cm:
+            continue
+        cparams = cm.group(2)
+        cvals = []
+        for p in cparams.split(","):
+            p = p.strip()
+            cvals.append(p.split("=", 1)[1].strip() if "=" in p else p)
+
+        if len(raw_vals) != len(cvals):
+            continue
+        if all(values_match(r, c) for r, c in zip(raw_vals, cvals)):
+            return candidate
+
+    return action
+
+
 def validate_state(state, template):
     """Check that a state assigns valid values to all template state variables.
     Returns (is_valid, reason_or_None)."""
@@ -36,8 +166,13 @@ def validate_state(state, template):
 
 def validate_transition(t, valid_actions, template):
     """Return (is_valid, reason) for a generated transition."""
-    if t.get("action") not in valid_actions:
-        return False, f"unknown action: {t.get('action')!r}"
+    raw = t.get("action", "")
+    canonical = normalize_action(raw)
+    if canonical not in valid_actions:
+        canonical = repair_action(raw, valid_actions)
+    if canonical not in valid_actions:
+        return False, f"unknown action: {raw!r}"
+    t["action"] = canonical
     ok, reason = validate_state(t.get("state", {}), template)
     if not ok:
         return False, f"invalid state — {reason}"
@@ -206,47 +341,79 @@ Do not include markdown code fences.
 Do not include any text outside the JSON object.
 """
 
+USER_PROMPT_DELTA = USER_PROMPT.replace(
+    '      "next_state": {...},',
+    '      "changes": {...},'
+).replace(
+    'Both "state" and "next_state" must be valid states.',
+    'Both "state" and the reconstructed next_state must assign valid values.'
+).replace(
+    'Do not include any text outside the JSON object.',
+    'Do not include any text outside the JSON object.'
+  # "changes" instruction appended below
+) + """
+
+CHANGES FORMAT
+--------------
+"changes" must contain ONLY the state variables whose value differs between
+state and next_state. Omit variables that do not change.
+If nothing changes, use an empty object: "changes": {}.
+All values in "changes" must be valid for their respective variable.
+"""
+
 
 def load_template(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def generate_transitions(mdp_template, N, model="gpt-4o"):
+def generate_transitions(mdp_template, N, provider="openai", model="gpt-4o",
+                        delta=False):
+    """Generate N MDP transitions.
 
-    batch_size = 50
+    Args:
+        provider:  'openai' or 'anthropic'
+        model:     model name for the chosen provider
+        delta:     if True, ask the LLM to output only changed variables
+                   ('changes' field) instead of the full next_state dict.
+                   next_state is reconstructed locally before saving.
+    """
+    batch_size = 100
     all_transitions = []
     valid_actions = build_valid_actions(mdp_template)
+    client = make_client(provider)
+    print(f"Provider: {provider}  Model: {model}  Delta: {delta}")
     print(f"Valid actions ({len(valid_actions)}): {sorted(valid_actions)}")
+
+    prompt = USER_PROMPT_DELTA if delta else USER_PROMPT
 
     while len(all_transitions) < N:
 
         remaining = N - len(all_transitions)
         current_batch = min(batch_size, remaining)
 
-        user_prompt = USER_PROMPT \
+        user_prompt = prompt \
             .replace("{MDP_TEMPLATE}", json.dumps(mdp_template, indent=2)) \
             .replace("{N}", str(current_batch))
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-            user=str(uuid.uuid4())
-        )
-
-        data = json.loads(response.choices[0].message.content)
+        try:
+            raw = call_api(client, provider, model, SYSTEM_PROMPT, user_prompt)
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            batch_size = max(10, batch_size // 2)
+            print(f"  ⚠ JSON truncated — reducing batch size to {batch_size} and retrying")
+            continue
 
         batch = data.get("transitions", [])
 
-        # Validate each transition — discard any with hallucinated actions or invalid states
         valid_batch = []
         discarded = 0
         for t in batch:
+            # Delta mode: reconstruct next_state from state + changes
+            if delta:
+                changes = t.pop("changes", {})
+                t["next_state"] = {**t.get("state", {}), **changes}
+
             ok, reason = validate_transition(t, valid_actions, mdp_template)
             if ok:
                 valid_batch.append(t)
@@ -255,10 +422,13 @@ def generate_transitions(mdp_template, N, model="gpt-4o"):
                 print(f"  ⚠ Discarded invalid transition: {reason} | action={t.get('action')}")
 
         all_transitions.extend(valid_batch)
-
-        print(f"Generated {len(batch)} transitions, kept {len(valid_batch)}, discarded {discarded} (total={len(all_transitions)})")
+        print(f"Generated {len(batch)} transitions, kept {len(valid_batch)}, "
+              f"discarded {discarded} (total={len(all_transitions)})")
 
     return all_transitions[:N]
+
+
+DEFAULT_MODELS = {"openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"}
 
 
 def main():
@@ -268,12 +438,25 @@ def main():
                         help="Number of transitions to generate")
     parser.add_argument("-o", "--output", default="transitions.jsonl",
                         help="Output JSONL file")
+    parser.add_argument("--provider", choices=["openai", "anthropic"],
+                        default="openai",
+                        help="LLM provider (default: openai)")
+    parser.add_argument("--model", default=None,
+                        help="Model name. Defaults: openai=gpt-4o, "
+                             "anthropic=claude-sonnet-4-6")
+    parser.add_argument("--delta", action="store_true",
+                        help="Ask LLM to output only changed variables "
+                             "(reduces output tokens ~40%%)")
 
     args = parser.parse_args()
 
+    model = args.model or DEFAULT_MODELS[args.provider]
     mdp_template = load_template(args.template)
 
-    transitions = generate_transitions(mdp_template, args.num)
+    transitions = generate_transitions(
+        mdp_template, args.num,
+        provider=args.provider, model=model, delta=args.delta
+    )
 
     with open(args.output, "w", encoding="utf-8") as f:
         for t in transitions:
