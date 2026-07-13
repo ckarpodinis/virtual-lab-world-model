@@ -20,10 +20,15 @@ def call_api(client, provider: str, model: str, system: str, user: str,
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=1,          # Anthropic range is 0-1
-            system=system,
+            temperature=1,
+            system=[{"type": "text", "text": system,
+                     "cache_control": {"type": "ephemeral"}}],
             messages=[
-                {"role": "user", "content": user}
+                {"role": "user", "content": [
+                    {"type": "text", "text": user,
+                     "cache_control": {"type": "ephemeral"}}
+                    ]
+                 }
             ]
         )
         return response.content[0].text
