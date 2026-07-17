@@ -18,8 +18,11 @@ Usage:
     # Skip MDP generation (reuse existing *_mdps.jsonl files):
     python run_pipeline.py --templates-dir templates/ -n 100 --skip-generate
 
+    # Generate constrained candidates locally and use the LLM only as judge:
+    python run_pipeline.py --templates-dir templates/ -n 100 --generation-mode programmatic
+
 Steps (per template found in --templates-dir):
-    1. mdp_generator.py  <template>  -n <N>  -o <stem>_mdps.jsonl
+    1. mdp_generator.py (llm mode) or mdp_candidate_generator.py (programmatic mode)
     2. build_world_model.py  <stem>_mdps.jsonl  -o <stem>_world_model.json
     3. extract_preconditions.py  <stem>_world_model.json  --threshold <T> -o <stem>_preconditions.json
     4. extract_causal_rules.py  <template> <stem>_preconditions.json -o <stem>_rules.json
@@ -86,7 +89,7 @@ def run(cmd: list[str], step_name: str, log: TextIOWrapper) -> None:
 
 def pipeline_for_template(
     template: Path,
-    n: int,
+    n: int | None,
     threshold: float,
     out_dir: Path,
     templates_dir: Path,
@@ -95,6 +98,11 @@ def pipeline_for_template(
     provider: str = "openai",
     model: str | None = None,
     delta: bool = False,
+    generation_mode: str = "llm",
+    seed: int = 0,
+    judge_batch_size: int = 50,
+    programmatic_sample_size: int | None = None,
+    exclude_noops: bool = False,
 ) -> None:
     """Run all pipeline steps for a single MDP template file."""
     # Derive stem: "scale_mdp_template.json" → "scale"
@@ -107,6 +115,7 @@ def pipeline_for_template(
         stem = template.stem  # fallback: strip .json only
 
     mdps_file          = out_dir / f"{stem}_mdps.jsonl"
+    candidates_file    = out_dir / f"{stem}_candidates.jsonl"
     world_model_file   = out_dir / f"{stem}_world_model.json"
     preconditions_file = out_dir / f"{stem}_preconditions.json"
     rules_file         = out_dir / f"{stem}_rules.json"
@@ -128,20 +137,40 @@ def pipeline_for_template(
             sys.exit(1)
         tee(f"  [skip] reusing existing {mdps_file.name}\n", log)
     else:
+        generator = (
+            "mdp_generator.py"
+            if generation_mode == "llm"
+            else "mdp_candidate_generator.py"
+        )
         cmd_gen = [
-            sys.executable, "-u", "mdp_generator.py",
+            sys.executable, "-u", generator,
             str(template),
-            "-n", str(n),
             "-o", str(mdps_file),
             "--provider", provider,
         ]
+        if generation_mode == "llm":
+            cmd_gen += ["-n", str(n)]
         if model:
             cmd_gen += ["--model", model]
-        if delta:
+        if generation_mode == "llm" and delta:
             cmd_gen.append("--delta")
+        if generation_mode == "programmatic":
+            cmd_gen += [
+                "--seed", str(seed),
+                "--judge-batch-size", str(judge_batch_size),
+                "--candidates-output", str(candidates_file),
+            ]
+            if programmatic_sample_size is not None:
+                cmd_gen += ["--sample-size", str(programmatic_sample_size)]
+            if exclude_noops:
+                cmd_gen.append("--exclude-noops")
         run(
             cmd_gen,
-            step_name=f"Generate MDPs ({n}) → {mdps_file.name}",
+            step_name=(
+                f"Generate MDPs ({n}) → {mdps_file.name}"
+                if generation_mode == "llm"
+                else f"Generate exhaustive MDP candidates → {mdps_file.name}"
+            ),
             log=log,
         )
 
@@ -204,10 +233,11 @@ def main() -> None:
     )
     parser.add_argument(
         "-n",
-        required=True,
+        required=False,
+        default=None,
         type=int,
         metavar="N",
-        help="Number of MDPs to generate per template.",
+        help="Number of MDPs generated per template in legacy LLM mode.",
     )
     parser.add_argument(
         "--threshold",
@@ -241,6 +271,16 @@ def main() -> None:
         help="LLM provider for MDP generation (default: openai).",
     )
     parser.add_argument(
+        "--generation-mode",
+        choices=["llm", "programmatic"],
+        default="llm",
+        help=(
+            "'llm' preserves the existing workflow; 'programmatic' generates "
+            "constrained candidates and uses the LLM only to judge them "
+            "(default: llm)."
+        ),
+    )
+    parser.add_argument(
         "--model",
         default=None,
         metavar="MODEL",
@@ -252,8 +292,50 @@ def main() -> None:
         default=False,
         help="Ask LLM to output only changed state variables (~40%% fewer output tokens).",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Post-generation sampling seed in programmatic mode (default: 0).",
+    )
+    parser.add_argument(
+        "--programmatic-sample-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Optional post-generation sample size for programmatic mode. "
+            "The exhaustive set is always constructed first."
+        ),
+    )
+    parser.add_argument(
+        "--judge-batch-size",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Candidates per LLM judgment request in programmatic mode (default: 50).",
+    )
+    parser.add_argument(
+        "--exclude-noops",
+        action="store_true",
+        default=False,
+        help="Exclude no-op candidates in programmatic generation mode.",
+    )
 
     args = parser.parse_args()
+
+    if args.delta and args.generation_mode != "llm":
+        parser.error("--delta applies only to --generation-mode llm")
+    if args.exclude_noops and args.generation_mode != "programmatic":
+        parser.error("--exclude-noops applies only to --generation-mode programmatic")
+    if not args.skip_generate and args.generation_mode == "llm" and args.n is None:
+        parser.error("-n is required for --generation-mode llm")
+    if args.n is not None and args.n < 1:
+        parser.error("-n must be at least 1")
+    if args.programmatic_sample_size is not None and args.programmatic_sample_size < 1:
+        parser.error("--programmatic-sample-size must be at least 1")
+    if args.judge_batch_size < 1:
+        parser.error("--judge-batch-size must be at least 1")
 
     templates_dir = Path(args.templates_dir)
     if not templates_dir.is_dir():
@@ -279,11 +361,15 @@ def main() -> None:
             f"Templates dir : {templates_dir}\n"
             f"Out dir       : {out_dir}\n"
             f"Log file      : {log_path}\n"
-            f"N per template: {args.n}\n"
+            f"LLM N/template: {args.n if args.n is not None else '(not used)'}\n"
+            f"Program sample: {args.programmatic_sample_size or '(exhaustive)'}\n"
             f"Threshold     : {args.threshold}\n"
             f"Provider      : {args.provider}\n"
             f"Model         : {args.model or '(default)'}\n"
+            f"Generation    : {args.generation_mode}\n"
             f"Delta         : {args.delta}\n"
+            f"Seed          : {args.seed}\n"
+            f"Judge batch   : {args.judge_batch_size}\n"
             f"Templates     : {[t.name for t in templates]}\n"
         )
         tee(start_msg, log)
@@ -300,6 +386,11 @@ def main() -> None:
                 provider=args.provider,
                 model=args.model,
                 delta=args.delta,
+                generation_mode=args.generation_mode,
+                seed=args.seed,
+                judge_batch_size=args.judge_batch_size,
+                programmatic_sample_size=args.programmatic_sample_size,
+                exclude_noops=args.exclude_noops,
             )
 
         finish_msg = (

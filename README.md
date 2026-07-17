@@ -143,12 +143,47 @@ python extract_causal_rules.py 'output9/*_mdp_template.json' preconditions.json
 python run_pipeline.py --templates-dir output9/ -n 100 --out-dir output9/results/
 ```
 
+The legacy LLM mode requires `-n` because the model generates that many
+transitions. Programmatic mode is exhaustive by default: it constructs the
+full valid Cartesian initial-state space, instantiates every template action,
+and generates every structurally permitted action-local outcome before asking
+the LLM only for rewards. A top-level `-n` supplied in programmatic mode is
+ignored with a log notice; use `--programmatic-sample-size` explicitly if a
+post-generation sample is intended.
+
+```bash
+python run_pipeline.py \
+    --templates-dir output9/ \
+    --out-dir output9/programmatic-results/ \
+    --generation-mode programmatic
+```
+
+To judge only a deterministic, action-balanced sample after exhaustive
+construction, use a separate sampling option:
+
+```bash
+python run_pipeline.py \
+    --templates-dir output9/ \
+    --out-dir output9/programmatic-sample/ \
+    --generation-mode programmatic \
+    --programmatic-sample-size 100 \
+    --seed 0
+```
+
+In programmatic mode, `*_candidates.jsonl` stores the unjudged candidates and
+`*_mdps.jsonl` stores the same transitions with LLM-assigned rewards. The log
+reports full Cartesian, invariant-filtering, structural-filtering,
+deduplication, no-op, per-action, and per-category counts.
+
 Runs all steps for every `*_mdp_template.json` found in `--templates-dir`.
 
 | Argument | Description |
 |---|---|
 | `--templates-dir DIR` | Directory containing `*_mdp_template.json` files |
-| `-n N` | Number of MDP transitions to generate per template |
+| `-n N` | Number of transitions to generate per template in legacy LLM mode |
+| `--generation-mode llm\|programmatic` | Select legacy LLM generation or exhaustive local candidate generation |
+| `--programmatic-sample-size N` | Optional post-generation sample size; exhaustive construction still happens first |
+| `--seed N` | Seed used for optional programmatic sampling |
 | `--threshold T` | Reward threshold (default: `0.7`) |
 | `--out-dir DIR` | Directory for all output files (default: current directory) |
 | `--log-file FILE` | Log file path (default: `pipeline.log` inside `--out-dir`) |

@@ -2331,19 +2331,22 @@ class LabInventoryApp(tk.Tk):
                     action_name = interaction_action(ro_inter, is_source=True)
 
                     if ro_inter["type"] == "place":
-                        # target is the destination object, receptor as sub-key if present
-                        params = {"object": ro_label, "target": tgt_label}
-                        if receptor:
-                            params["receptor"] = receptor
+                        # The existing action parameters identify the movable
+                        # object and destination receptor.  Keep only the
+                        # destination owner as top-level structural metadata.
+                        params = {"object": ro_label, "target": receptor}
                     else:
                         params = {"object": ro_label, "target_object": tgt_label}
 
                     action_entry = {
                         "name": action_name,
                         "type": "interaction",
-                        **({"subtype": "place"} if ro_inter["type"] == "place" else {}),
+                        "subtype": ro_inter["type"],
+                        "target_object": tgt_label,
                         "parameters": params
                     }
+                    if ro_inter["type"] != "place":
+                        action_entry["source_object"] = ro_label
                     if action_entry not in template["actions"]:
                         template["actions"].append(action_entry)
             else:
@@ -2351,6 +2354,7 @@ class LabInventoryApp(tk.Tk):
                 action_entry = {
                     "name": "place",
                     "type": "interaction",
+                    "subtype": "place",
                     "parameters": {"object": ro_label, "target": None}
                 }
                 if action_entry not in template["actions"]:
@@ -2381,6 +2385,9 @@ class LabInventoryApp(tk.Tk):
                 action_entry = {
                     "name": f"{norm(comp['name'])}.{action}",
                     "type": "control",
+                    "owner": template["object"],
+                    "component": norm(comp["name"]),
+                    "component_type": comp.get("type"),
                     "parameters": {}
                 }
 
@@ -2428,6 +2435,7 @@ class LabInventoryApp(tk.Tk):
                         "name": interaction_action(inter, is_source=False),
                         "type": "interaction",
                         "subtype": "place",
+                        "target_object": template["object"],
                         "parameters": {
                             "object": obj_label,
                             "target": norm(tgt["component"]) if tgt.get("component") else None
@@ -2450,9 +2458,10 @@ class LabInventoryApp(tk.Tk):
                         "name": interaction_action(inter, is_source=True),
                         "type": "interaction",
                         "subtype": "place",
+                        "target_object": tgt_label,
                         "parameters": {
                             "object": f"{cat}:{norm(type_name)}[{obj_id}]",
-                            "target": receptor if receptor else tgt_label
+                            "target": receptor
                         }
                     }
 
@@ -2693,6 +2702,52 @@ class LabInventoryApp(tk.Tk):
             a for a in template["actions"]
             if not (a["type"] == "control" and a["name"] in interaction_short_names)
         ]
+
+        # Preserve ownership and the original inventory component type. Special
+        # object-level states use state_type instead. The candidate generator
+        # derives its smaller internal role vocabulary from this source data.
+        component_types = {}
+        for owner_cat, owner_types in inventory.items():
+            for owner_type, instances in owner_types.items():
+                owner_base = f"{owner_cat}:{norm(owner_type)}"
+                for instance in instances:
+                    for component in instance.get("components", []):
+                        component_types[(owner_base, norm(component["name"]))] = (
+                            component.get("type", "")
+                        )
+
+        for state in template["states"]:
+            state_name = state["name"]
+            prefix = state_name.rsplit(".", 1)[0]
+            if "." in state_name and ":" in prefix:
+                owner = prefix
+                local_name = state_name.rsplit(".", 1)[-1]
+            else:
+                owner = template["object"]
+                local_name = state_name
+
+            owner_base = owner.split("[", 1)[0]
+            component_type = component_types.get((owner_base, local_name))
+            state["owner"] = owner
+            state.pop("role", None)
+
+            if local_name == "material":
+                state["state_type"] = "material"
+            elif local_name == "location":
+                state["state_type"] = "location"
+            elif component_type:
+                state["component_type"] = component_type
+
+        for action in template["actions"]:
+            if action.get("subtype") != "transfer":
+                continue
+            parameters = action.get("parameters", {})
+            action.setdefault(
+                "source_object",
+                parameters.get("source_object", template["object"]),
+            )
+            if parameters.get("target_object"):
+                action.setdefault("target_object", parameters["target_object"])
 
         return template
 
@@ -2966,4 +3021,3 @@ class LabInventoryApp(tk.Tk):
 if __name__ == "__main__":
     app = LabInventoryApp()
     app.mainloop()
-
