@@ -23,8 +23,8 @@ Usage:
 
 Steps (per template found in --templates-dir):
     1. mdp_generator.py (llm mode) or mdp_candidate_generator.py (programmatic mode)
-    2. build_world_model.py  <stem>_mdps.jsonl  -o <stem>_world_model.json
-    3. extract_preconditions.py  <stem>_world_model.json  --threshold <T> -o <stem>_preconditions.json
+    2. build_world_model.py (llm) or build_possibilistic_world_model.py (programmatic)
+    3. extract_preconditions.py (llm) or extract_preconditions_possibilistic.py (programmatic)
     4. extract_causal_rules.py  <template> <stem>_preconditions.json -o <stem>_rules.json
 """
 
@@ -175,25 +175,40 @@ def pipeline_for_template(
         )
 
     # Step 2 — build world model
+    world_model_builder = (
+        "build_world_model.py"
+        if generation_mode == "llm"
+        else "build_possibilistic_world_model.py"
+    )
+    world_model_cmd = [
+        sys.executable, "-u", world_model_builder,
+        str(mdps_file),
+        "-o", str(world_model_file),
+    ]
+    if generation_mode == "programmatic":
+        world_model_cmd += ["--threshold", str(threshold)]
     run(
-        [
-            sys.executable, "-u", "build_world_model.py",
-            str(mdps_file),
-            "-o", str(world_model_file),
-        ],
+        world_model_cmd,
         step_name=f"Build world model → {world_model_file.name}",
         log=log,
     )
 
     # Step 3 — extract preconditions (--template writes "object" field to output)
+    precondition_extractor = (
+        "extract_preconditions.py"
+        if generation_mode == "llm"
+        else "extract_preconditions_possibilistic.py"
+    )
+    precondition_cmd = [
+        sys.executable, "-u", precondition_extractor,
+        str(world_model_file),
+        "--template", str(template),
+        "-o", str(preconditions_file),
+    ]
+    if generation_mode == "llm":
+        precondition_cmd += ["--threshold", str(threshold)]
     run(
-        [
-            sys.executable, "-u", "extract_preconditions.py",
-            str(world_model_file),
-            "--threshold", str(threshold),
-            "--template", str(template),
-            "-o", str(preconditions_file),
-        ],
+        precondition_cmd,
         step_name=f"Extract preconditions (threshold={threshold})",
         log=log,
     )
@@ -244,7 +259,10 @@ def main() -> None:
         type=float,
         default=DEFAULT_THRESHOLD,
         metavar="T",
-        help=f"Reward threshold for extract_preconditions.py (default: {DEFAULT_THRESHOLD}).",
+        help=(
+            "Reward threshold for applicability/precondition extraction "
+            f"(default: {DEFAULT_THRESHOLD})."
+        ),
     )
     parser.add_argument(
         "--out-dir",
