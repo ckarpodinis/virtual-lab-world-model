@@ -20,8 +20,13 @@ def parse_world_model(path):
     } for item in data]
 
 
-def _forbidden_contrasts(entries_a):
-    contrasts = defaultdict(set)
+DIRECT = "DIRECT"
+COUPLED = "COUPLED"
+
+
+def _forbidden_contrasts(entries_a, valid_states=None):
+    """Return contrast types keyed by variable and candidate forbidden value."""
+    contrasts = defaultdict(dict)
     for first, second in combinations(entries_a, 2):
         if first["applicable"] == second["applicable"]:
             continue
@@ -32,15 +37,52 @@ def _forbidden_contrasts(entries_a):
         if len(differences) == 1:
             key = differences[0]
             inapplicable = first if not first["applicable"] else second
-            contrasts[key].add(inapplicable["state"][key])
+            contrasts[key][inapplicable["state"][key]] = DIRECT
+
+    # Entries in the possibilistic model enumerate the structurally valid state
+    # space.  Use that enumeration to distinguish true structural coupling from
+    # a merely unobserved direct contrast.
+    valid_states = valid_states or [entry["state"] for entry in entries_a]
+    applicable = [entry for entry in entries_a if entry["applicable"]]
+    inapplicable = [entry for entry in entries_a if not entry["applicable"]]
+    best_coupled = {}
+    for valid in applicable:
+        for invalid in inapplicable:
+            if valid["state"].keys() != invalid["state"].keys():
+                continue
+            differences = [key for key in valid["state"]
+                           if valid["state"][key] != invalid["state"][key]]
+            for key in differences:
+                value = invalid["state"][key]
+                if contrasts[key].get(value) == DIRECT:
+                    continue
+                candidate = (key, value)
+                distance = len(differences)
+                counterfactual = dict(valid["state"])
+                counterfactual[key] = value
+                structurally_impossible = not any(
+                    state == counterfactual for state in valid_states
+                )
+                best_distance, coupled_at_best = best_coupled.get(
+                    candidate, (None, False)
+                )
+                if best_distance is None or distance < best_distance:
+                    best_coupled[candidate] = (distance, structurally_impossible)
+                elif distance == best_distance:
+                    best_coupled[candidate] = (
+                        distance, coupled_at_best or structurally_impossible
+                    )
+    for (key, value), (_, structurally_impossible) in best_coupled.items():
+        if structurally_impossible:
+            contrasts[key][value] = COUPLED
     return contrasts
 
 
-def extract_rules(entries_a):
+def extract_rules(entries_a, valid_states=None):
     applicable = [entry for entry in entries_a if entry["applicable"]]
     if not applicable:
         return {"note": "always inapplicable regardless of state"}
-    contrasts = _forbidden_contrasts(entries_a)
+    contrasts = _forbidden_contrasts(entries_a, valid_states)
     rules = {}
     for key in sorted(entries_a[0]["state"]):
         values = {entry["state"][key] for entry in entries_a}
@@ -60,12 +102,13 @@ def extract_rules(entries_a):
 
 
 def extract_preconditions(entries):
+    valid_states = [entry["state"] for entry in entries]
     by_action = defaultdict(list)
     for entry in entries:
         by_action[entry["action"]].append(entry)
     actions = []
     for action in sorted(by_action):
-        rules = extract_rules(by_action[action])
+        rules = extract_rules(by_action[action], valid_states)
         block = {"action": action, "preconditions": []}
         if "note" in rules:
             block["note"] = rules["note"]
