@@ -183,6 +183,12 @@ def build_rules(own_map, other_map, preconditions_json):
     subject_base   = strip_instance_index(subject_object) if subject_object else None
 
     results = []
+    all_values_by_variable = defaultdict(set)
+    for action_block in preconditions_json["actions"]:
+        for precondition in action_block.get("preconditions", []):
+            all_values_by_variable[precondition["variable"]].add(
+                precondition["value"]
+            )
 
     for action_block in preconditions_json["actions"]:
         action = action_block["action"]
@@ -233,7 +239,13 @@ def build_rules(own_map, other_map, preconditions_json):
             producer_action = entry["action"] if entry else None
             producer_source = entry["source"] if entry else None
 
-            strength = "STRONG" if var in forbidden else "WEAK"
+            alternative_values = all_values_by_variable[var] - {n["value"]}
+            strength = (
+                "STRONG"
+                if alternative_values
+                and all(value in forbidden[var] for value in alternative_values)
+                else "WEAK"
+            )
 
             results.append({
                 "action": action,
